@@ -1,0 +1,10 @@
+"Task Aware Debugger for GDB" version 25.6.0 (202506250844)
+Copyright 2016-2025 NXP
+==================================
+20:22:27.646 INFO: [ZephyrRTOS] .config file could not be read [C:\Users\Nico\Desktop\Carpetas\Facu\Digital 3\tpfinal_digital3\TPFINAL\final\Debug\.config (El sistema no puede encontrar el archivo especificado)]
+20:22:27.646 INFO: [TadModel] DSF session ID 2 has started.
+20:22:31.769 INFO: [TadState] TAD state changed: DEBUG_STARTED -> DEBUG_INIT_0 (RESUMED, USER_REQUEST)
+20:22:31.804 INFO: [TadState] TAD state changed: DEBUG_INIT_0 -> DEBUG_INIT_1 (SUSPENDED, SIGNAL)
+20:22:32.909 INFO: [TadState] TAD state changed: DEBUG_INIT_1 -> DEBUG_SUSPENDED (RESUMED, USER_REQUEST)
+20:22:33.21 INFO: [TadState] TAD state changed: DEBUG_SUSPENDED -> DEBUG_SUSPENDED (SUSPENDED, BREAKPOINT)
+20:25:54.473 INFO: [TadModel] DSF session ID 2 has ended.

@@ -1,0 +1,6 @@
+"Task Aware Debugger for GDB" version 25.6.0 (202506250844)
+Copyright 2016-2025 NXP
+==================================
+20:22:20.361 INFO: [ZephyrRTOS] .config file could not be read [C:\Users\Nico\Desktop\Carpetas\Facu\Digital 3\tpfinal_digital3\TPFINAL\final\Debug\.config (El sistema no puede encontrar el archivo especificado)]
+20:22:20.362 INFO: [TadModel] DSF session ID 1 has started.
+20:22:27.102 INFO: [TadModel] DSF session ID 1 has ended.

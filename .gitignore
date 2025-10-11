@@ -3,5 +3,5 @@
 /tpfinal/AzureRTOS_TAD_logs/
 /tpfinal/FreeRTOS_TAD_logs/
 /tpfinal/ZephyrRTOS_TAD_logs/
-\.mcuxpressoide_packages_support
+/tpfinal/.mcuxpressoide_packages_support/
 .log

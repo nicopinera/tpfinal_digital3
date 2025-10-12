@@ -2,21 +2,10 @@
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_gpio.h"
 #include "lpc17xx_exti.h"
+#include "func_config.h"
+#include <stdint.h>
 
-// MACROS Y DEFINE
-#define FUNC_0 0
-#define FUNC_1 1
-#define FUNC_2 2
-#define FUNC_3 3
-
-// Estructura para configuracion sencilla de puertos
-typedef struct {
-	uint8_t puerto;
-	uint32_t pin;
-	uint8_t func;
-} Pines;
-
-// Definimos los LEDs en un arreglo
+// Definimos los Pines en un arreglo
 Pines pines_uso[] = { { 2, 12, FUNC_0 }, // P2.12 - Funcion GPIO
 		{ 2, 13, FUNC_0 }, // P2.13 - Funcion GPIO
 		{ 2, 11, FUNC_0 }, // P2.11 - Funcion GPIO
@@ -26,7 +15,7 @@ Pines pines_uso[] = { { 2, 12, FUNC_0 }, // P2.12 - Funcion GPIO
 		};
 
 // Calculo del numero de pines
-const int NUM_PINES = sizeof(leds) / sizeof(leds[0]);
+const int NUM_PINES = sizeof(pines_uso) / sizeof(pines_uso[0]);
 
 void configPIN(void); // Configuracion de GPIO
 void configADC(void); // Configuracion del ADC
@@ -37,6 +26,8 @@ void configUART(void); // Configuracion de comunicacion UART
 int main(void) {
 	SystemInit();
 	configPIN();
+	//configADC();
+
 	while (1) {
 	}
 }

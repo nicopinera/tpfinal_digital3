@@ -11,6 +11,7 @@
 #define FUNC_1 1
 #define FUNC_2 2
 #define FUNC_3 3
+#define TIME_DELAY 1000000
 
 // Estructura para configuracion sencilla de puertos
 typedef struct {
@@ -19,5 +20,6 @@ typedef struct {
 	uint8_t func;
 } Pines;
 
+void delay();
 
 #endif /* FUNC_CONFIG_H_ */

@@ -6,12 +6,9 @@
 #include <stdint.h>
 
 // Definimos los Pines en un arreglo
-Pines pines_uso[] = { { 2, 12, FUNC_0 }, // P2.12 - Funcion GPIO
-		{ 2, 13, FUNC_0 }, // P2.13 - Funcion GPIO
-		{ 2, 11, FUNC_0 }, // P2.11 - Funcion GPIO
-		{ 0, 21, FUNC_0 },  // P0.21 - Funcion GPIO
-		{ 0, 3, FUNC_0 }, // P0.3 - Funcion GPIO
-		{ 0, 2, FUNC_0 }, // P0.2 - Funcion GPIO
+Pines pines_uso[] = { { 0, 22, FUNC_0 }, // P2.12 - Funcion GPIO
+		{ 3, 25, FUNC_0 }, // P2.13 - Funcion GPIO
+		{ 3, 26, FUNC_0 }, // P2.11 - Funcion GPIO
 		};
 
 // Calculo del numero de pines
@@ -23,12 +20,31 @@ void configDAC(void); // configuracion del DAC
 void configDMA(void); // Configuracion de DMA
 void configUART(void); // Configuracion de comunicacion UART
 
+
+
+void apagar() {
+	for (int i = 0; i < NUM_PINES; i++) {
+		GPIO_SetValue(pines_uso[i].puerto, 1 << pines_uso[i].pin);
+
+	}
+}
+
 int main(void) {
 	SystemInit();
 	configPIN();
 	//configADC();
 
 	while (1) {
+		apagar();
+		GPIO_ClearValue(0, 1 << 22);
+		delay();
+		apagar();
+		GPIO_ClearValue(3, 1 << 25);
+		delay();
+		apagar();
+		GPIO_ClearValue(3, 1 << 26);
+		delay();
+
 	}
 }
 
@@ -42,6 +58,7 @@ void configPIN(void) {
 		pin.Pinmode = 0;
 		pin.OpenDrain = 0;
 		PINSEL_ConfigPin(&pin);
+		GPIO_SetDir(pines_uso[i].puerto, 1 << pines_uso[i].pin, 1);
 	}
 }
 /*

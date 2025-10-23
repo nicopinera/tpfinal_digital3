@@ -9,6 +9,10 @@ import os
 import config
 os.system('cls')
 
+'''
+Cuando nosotros transmitimos usando UART enviamos todos los caractres del comando
+En C nosotros tomamos estos caracteres que nos llegan y los almacenamos hasta encontrar un \n
+'''
 
 lpc_uart = s.Serial(config.puerto,config.baudios,timeout=1) # abro el puerto, le digo que espere 1 segundo
 data_buffer = deque(maxlen=config.sample) # creamos un buffer circular de 100 muestras
@@ -24,6 +28,16 @@ def menu():
     print("5) Salir \n")
     opcion = int(input("Ingrese opcion [1,2,3,4,5]: "))
     return opcion
+
+# Esta funcion correra en un hilo demonio
+def recibirDatos():
+    while 1:
+        if config.muestreando:
+            lectura = lpc_uart.read(2) # se leen 2 bytes o los que lleguen antes de 1 segundo (timeout)
+            if len(lectura) == 2:
+                val_uint16 = struct.unpack('<H',lectura)[0] # se convierte a un uint16_t
+                data_buffer.append(val_uint16)
+                
 
 def establecerFrecuencia():
     frec = int(input("Frecuencia en Hz: "))

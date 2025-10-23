@@ -5,7 +5,7 @@ Idea: La PC puede pedir al LPC1769 que:
 - Lea una señal analógica (ADC con DMA): si se utiliza la opcion de captuar una señal utilizaria con el adc utilizo un canal de DMA y dos listas enlazadas
 para ir guardando datos. El adc se triggerea con el timer para settear una frecuencia de muestreo.
 
-- Genere una onda por DAC seno o rampa (también vía DMA)
+- Genere una onda por DAC seno o rampa (también vía DMA):
 
 En la PC se muestra la señal capturada o generada (por ejemplo en Python). Qué integra
 
@@ -23,6 +23,8 @@ Requisito: Uso
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_gpio.h"
 #include "lpc17xx_exti.h"
+#include "lpc17xx_adc.h"
+#include "lpc17xx_dac.h"
 #include "func_config.h"
 #include <stdint.h>
 
@@ -47,6 +49,8 @@ int main(void) {
 	SystemInit();
 	configPIN();
 	configADC();
+	configDAC();
+
 
 	while (1) {
 		GPIO_ClearValue(pines_uso[0].puerto, 1 << pines_uso[0].pin); // prendo led rojo
@@ -72,5 +76,19 @@ void configADC(void){
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
 	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
 	ADC_ChannelCmd(LPC_ADC, ADC_CHANNEL_0, ENABLE); // HABILITO CANAL 0
+}
+
+void configDAC(void){
+	DAC_CONVERTER_CFG_Type config_dac;
+	config_dac.DMA_ENA = 1; // habilito dma
+	config_dac.CNT_ENA = 1; // habilito time out
+	config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
+	// faltaria configurar el time out o calcularlo en funcion de la frecuencia de la señal
+	// Time_out = (25000000)/(Fseñal * N_muestras)
+	DAC_init(LPC_DAC);
+	DAC_SetBias(LPC_ADC, 0); // seteo la frecuencia en 1MHz
+	DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
+
+
 }
 

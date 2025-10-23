@@ -11,7 +11,7 @@
 #define FUNC_1 1 // funcion 1
 #define FUNC_2 2 // funcion 2
 #define FUNC_3 3 // funcion 3
-#define MATH_REG_1 // valor del match register
+#define MATH_REG_1 0 // valor del match register
 #define PR_TICK_1 1 // valor en ticks del pre scaler 1
 #define MAX_SAMPLES 100
 

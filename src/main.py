@@ -6,15 +6,12 @@ import numpy as np
 from collections import deque
 import time
 import os
+import config
 os.system('cls')
 
-# Configuracion previa
-puerto = "COM1" # nombre del puerto donde esta conectado la lpc
-baudios = 9600 # debe coincidir con la configuracion de uart en la lpc
-sample = 100
-lpc_uart = s.Serial(puerto,baudios,timeout=1) # abro el puerto, le digo que espere 1 segundo
-data_buffer = deque(maxlen=sample) # creamos un buffer circular de 100 muestras
-muestreando = False # no se esta muestreando -> Bandera global
+
+lpc_uart = s.Serial(config.puerto,config.baudios,timeout=1) # abro el puerto, le digo que espere 1 segundo
+data_buffer = deque(maxlen=config.sample) # creamos un buffer circular de 100 muestras
 time.sleep(2) # duermo para que se termine de configurar todo
 
 def menu():

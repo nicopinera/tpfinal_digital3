@@ -37,7 +37,23 @@ def recibirDatos():
             if len(lectura) == 2:
                 val_uint16 = struct.unpack('<H',lectura)[0] # se convierte a un uint16_t
                 data_buffer.append(val_uint16)
-                
+
+threading.Thread(target=recibirDatos,daemon=True).start() # creamos un hilo deamon que ejecuta recibirDatos 
+
+# configuracion del plot
+plt.ion() # modo interactivo
+fig,ax = plt.subplots()
+line,=ax.prot([],[])
+ax.set_ylim(0,2**12)
+ax.set_xlim(0,config.sample)
+
+def actualizarPlot():
+    if len(data_buffer) >0:
+        y = np.array(data_buffer) # eje y 
+        x = np.array(len(y)) # eje x
+        line.set_data(x,y)
+        plt.pause(0.001)
+        fig.canvas.draw()
 
 def establecerFrecuencia():
     frec = int(input("Frecuencia en Hz: "))
@@ -72,3 +88,4 @@ while(1):
         break
     else:
         print("Opcion invalida")
+        

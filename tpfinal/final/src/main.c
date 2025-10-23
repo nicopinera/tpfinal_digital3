@@ -23,6 +23,7 @@ Requisito: Uso
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_gpio.h"
 #include "lpc17xx_exti.h"
+#include "lpc17xx_gpdma.h"
 #include "lpc17xx_adc.h"
 #include "lpc17xx_dac.h"
 #include "func_config.h"
@@ -33,8 +34,9 @@ Pines pines_uso[] = { { 0, 22, FUNC_0 }, // P2.12 - Funcion GPIO
 		{0,23,FUNC_1}, // AD0.0 para capturar la señal
 		};
 
-uint16_t buffer1[MAX_SAMPLES]; // buffer 1 para muestras del ADC
-uint16_t buffer2[MAX_SAMPLES]; // buffer 2 para muestras del ADC
+// se puede usar un solo buffer?
+uint32_t buffer1[MAX_SAMPLES]; // buffer 1 para muestras del ADC
+uint32_t buffer2[MAX_SAMPLES]; // buffer 2 para muestras del ADC
 
 // Calculo del numero de pines
 const int NUM_PINES = sizeof(pines_uso) / sizeof(pines_uso[0]);
@@ -49,6 +51,7 @@ int main(void) {
 	SystemInit();
 	configPIN();
 	configADC();
+	configDMA();
 	configDAC();
 
 
@@ -76,6 +79,35 @@ void configADC(void){
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
 	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
 	ADC_ChannelCmd(LPC_ADC, ADC_CHANNEL_0, ENABLE); // HABILITO CANAL 0
+}
+
+void configDMA(void){
+	GPDMA_LLI_Type lli_adc_1;
+	GPDMA_LLI_Type lli_adc_2;
+	GPDMA_Channel_CFG_Type config_dma;
+	config_dma.ChannelNum = 0; // canal 0
+	config_dma.TransferSize = MAX_SAMPLES; // 100 muestras
+	config_dma.TransferWidth = 32; // 32 bits
+	config_dma.SrcMemAddr = 0;
+	config_dma.DstMemAddr = buffer1;
+	config_dma.TransferType = GPDMA_TRANSFERTYPE_P2M; // ADC -> MEMORIA
+	config_dma.SrcConn = GPDMA_CONN_ADC; // ADC
+	config_dma.DstConn = 0;
+	config_dma.DMALLI = &lli_adc_1; // puntero?
+
+	lli_adc_1.SrcAddr = LPC_ADC->ADGDR; // tomo el registro completo
+	lli_adc_1.DstAddr = buffer1; // faltaria &?
+	lli_adc_1.NextLLI = &lli_adc_2;
+	// falta control
+
+	lli_adc_2.SrcAddr = LPC_ADC->ADGDR; // tomo el registro
+	lli_adc_2.DstAddr = buffer2;
+	lli_adc_2.NextLLI = &lli_adc_1;
+
+	GPDMA_Init();
+	GPDMA_Setup(&config_dma);
+	GPDMA_ChannelCmd(0, ENABLE); // habilito canal 0
+
 }
 
 void configDAC(void){

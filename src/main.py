@@ -25,8 +25,6 @@ def senalSeno():
 
 def senalRampa():
     print("Generando señal Rampa")
-    
-
 
 
 while(1):
@@ -45,5 +43,4 @@ while(1):
         continue
     elif op == 5:
         print("--- Saliendo ---")
-        break 
-    
+        break

@@ -1,8 +1,9 @@
 /*Proyecto: Mini Osciloscopio + Generador de señales
  * Idea: La PC puede pedir al LPC1769 que:
  * Lea una señal analógica (ADC con DMA): si se utiliza la opcion de captuar una señal
- * utilizaria con el adc utilizo un canal de DMA y dos listas enlazadaspara ir guardando datos.
- * El adc se triggerea con el timer para settear una frecuencia de muestreo. Tiene que haber un comando
+ * con el adc utilizo un canal de DMA y dos listas enlazadas para ir guardando datos.
+ * El adc se triggerea con el timer para settear una frecuencia de muestreo. Tiene que haber un comando para iniciar el muestreo
+ *
  *
  * Genere una onda por DAC seno o rampa (también vía DMA)
  * En la PC se muestra la señal capturada o generada (por ejemplo en Python). Qué integra
@@ -35,8 +36,8 @@ Pines pines_uso[] = { { 0, 22, FUNC_0 }, // P2.12 - Funcion GPIO
 		};
 
 // se puede usar un solo buffer?
-uint32_t buffer1[MAX_SAMPLES]; // buffer 1 para muestras del ADC
-uint32_t buffer2[MAX_SAMPLES]; // buffer 2 para muestras del ADC
+uint16_t buffer1[MAX_SAMPLES]; // buffer 1 para muestras del ADC
+uint16_t buffer2[MAX_SAMPLES]; // buffer 2 para muestras del ADC
 
 // Calculo del numero de pines
 const int NUM_PINES = sizeof(pines_uso) / sizeof(pines_uso[0]);
@@ -105,11 +106,12 @@ void configDMA(void) {
 	lli_adc_1.SrcAddr = (uint32_t) &(LPC_ADC->ADGDR); // tomo el registro completo
 	lli_adc_1.DstAddr = (uint32_t) &buffer1; // faltaria &?
 	lli_adc_1.NextLLI = (uint32_t) &lli_adc_2;
-	// falta control
+	lli_adc_1.Control = T_SIZE | S_TRANF_WIDTH | D_TRANF_WIDTH | D_INCREMENT;
 
 	lli_adc_2.SrcAddr = (uint32_t) &(LPC_ADC->ADGDR); // tomo el registro
 	lli_adc_2.DstAddr = (uint32_t) &buffer2;
 	lli_adc_2.NextLLI = (uint32_t) &lli_adc_1;
+	lli_adc_2.Control = T_SIZE | S_TRANF_WIDTH | D_TRANF_WIDTH | D_INCREMENT;
 
 	GPDMA_Init();
 	GPDMA_Setup(&config_dma);

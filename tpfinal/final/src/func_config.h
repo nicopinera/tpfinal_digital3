@@ -11,7 +11,9 @@
 #define FUNC_1 1 // funcion 1
 #define FUNC_2 2 // funcion 2
 #define FUNC_3 3 // funcion 3
-
+#define MODE_0 0
+#define MODE_1 1
+#define MODE_2 2
 #define PR_TICK_1 4 // valor en ticks del pre scaler 1
 #define MAX_SAMPLES 100
 #define PCLK 25000000
@@ -27,6 +29,7 @@ typedef struct {
 	uint8_t puerto;
 	uint32_t pin;
 	uint8_t func;
+	uint8_t mode;
 } Pines;
 
 #endif /* FUNC_CONFIG_H_ */

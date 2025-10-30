@@ -35,14 +35,13 @@ volatile int banco = 0; // 0 -> buffer 1 | 1 -> buffer 2
 volatile int frec = 10000; // setear la frecuencia de la onda
 
 // Definimos los Pines en un arreglo
-Pines pines_uso[] = { { 0, 22, FUNC_0 }, // P0.22 - Funcion GPIO
-		{ 0, 23, FUNC_1 }, // AD0.0 para capturar la señal
-		{ 3, 25, FUNC_0 }, // led
-		{ 0, 26, FUNC_2 }, };
+Pines pines_uso[] = { { 0, 22, FUNC_0, MODE_0 }, // P0.22 - Funcion GPIO
+		{ 0, 23, FUNC_1, MODE_2 }, // AD0.0 para capturar la señal
+		{ 3, 25, FUNC_0, MODE_0 }, // led
+		{ 0, 26, FUNC_2, MODE_2 }, };
 
-// se puede usar un solo buffer?
-uint32_t buffer1[MAX_SAMPLES]; // buffer 1 para muestras del ADC
-uint32_t buffer2[MAX_SAMPLES]; // buffer 2 para muestras del ADC
+// ALMACENA LA FUNCION GENERADA (Seno, rampa, etc)
+uint32_t buffer[MAX_SAMPLES]; // buffer 1 para muestras del ADC
 
 // Calculo del numero de pines
 const int NUM_PINES = sizeof(pines_uso) / sizeof(pines_uso[0]);
@@ -68,7 +67,6 @@ int main(void) {
 			set_mat_frec(frec);
 			TIM_Cmd(LPC_TIM0, 1); // habilito timer 0
 			ADC_ChannelCmd(LPC_ADC, 0, 1); // habilito el canal 0
-			GPDMA_ChannelCmd(0, 1); // habilito canal 0
 			GPIO_ClearValue(3, 1 << 25);
 			break;
 		case 1: // apago el adc
@@ -89,15 +87,10 @@ void configPIN(void) {
 		pin.Pinnum = pines_uso[i].pin;
 		pin.Funcnum = pines_uso[i].func;
 		pin.OpenDrain = 0;
-
+		pin.Pinmode = pines_uso[i].mode;
+		PINSEL_ConfigPin(&pin);
 		if (pines_uso[i].func == FUNC_0) { // GPIO
-			pin.Pinmode = 0;
-			GPIO_SetDir(pines_uso[i].puerto, 1 << pines_uso[i].pin, 1); // salida
-			PINSEL_ConfigPin(&pin);
-
-		} else {
-			pin.Pinmode = 2; // tristate
-			PINSEL_ConfigPin(&pin);
+			GPIO_SetDir(pines_uso[i].puerto, 1 << pines_uso[i].pin, 1);
 		}
 
 	}
@@ -107,6 +100,15 @@ void configADC(void) {
 	ADC_Init(LPC_ADC, 200000);
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
 	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
+	// Falta configurar la interrupcion
+	//ADC_IntConfig(LPC_ADC, NewState)
+	NVIC_EnableIRQ(ADC_IRQn); // habilito la int
+}
+
+void ADC_IRQHandler(){
+	int valor = ADC_GetData(0); // tomo los datos ya corregidos
+	valor = valor << 4; // corro 4 para que se ignoren los menos significativos
+	DAC_UpdateValue(LPC_DAC, valor); // pongo el dato en el DAC
 }
 
 void set_mat_frec(int frecuencia) {
@@ -134,105 +136,45 @@ void configTIMER(void) {
 }
 
 void configDMA(void) {
-	GPDMA_LLI_Type lli_adc_1;
-	GPDMA_LLI_Type lli_adc_2;
-	GPDMA_Channel_CFG_Type config_dma;
-	config_dma.ChannelNum = 0; // canal 0
-	config_dma.TransferSize = MAX_SAMPLES; // 100 muestras
-	config_dma.TransferWidth = 32; // 32 bits
-	config_dma.SrcMemAddr = 0;
-	config_dma.DstMemAddr = (uint32_t) &buffer1;
-	config_dma.TransferType = GPDMA_TRANSFERTYPE_P2M; // ADC -> MEMORIA
-	config_dma.SrcConn = GPDMA_CONN_ADC; // ADC
-	config_dma.DstConn = 0;
-	config_dma.DMALLI = (uint32_t) &lli_adc_1; // puntero?
-
-	lli_adc_1.SrcAddr = (uint32_t) &(LPC_ADC->ADGDR); // tomo el registro completo
-	lli_adc_1.DstAddr = (uint32_t) &buffer1; // faltaria &?
-	lli_adc_1.NextLLI = (uint32_t) &lli_adc_2;
-	lli_adc_1.Control = MAX_SAMPLES | S_TRANF_WIDTH | D_TRANF_WIDTH
-			| D_INCREMENT | INT_FIN;
-	// falta control
-
-	lli_adc_2.SrcAddr = (uint32_t) &(LPC_ADC->ADGDR); // tomo el registro
-	lli_adc_2.DstAddr = (uint32_t) &buffer2;
-	lli_adc_2.NextLLI = (uint32_t) &lli_adc_1;
-	lli_adc_2.Control = MAX_SAMPLES | S_TRANF_WIDTH | D_TRANF_WIDTH
-			| D_INCREMENT | INT_FIN;
-
-	GPDMA_Init();
-	GPDMA_Setup(&config_dma);
 
 	GPDMA_LLI_Type lli_dac_1;
-	GPDMA_LLI_Type lli_dac_2;
+	GPDMA_Channel_CFG_Type config_dma;
 	config_dma.ChannelNum = 1; // canal 1
 	config_dma.TransferSize = MAX_SAMPLES; // 100 muestras
 	config_dma.TransferWidth = 32; // 32 bits
-	config_dma.SrcMemAddr = (uint32_t)&buffer1;
+	config_dma.SrcMemAddr = (uint32_t) &buffer;
 	config_dma.DstMemAddr = 0;
 	config_dma.TransferType = GPDMA_TRANSFERTYPE_M2P; // MEMORIA -> DAC
 	config_dma.SrcConn = 0;
 	config_dma.DstConn = GPDMA_CONN_DAC;
-	config_dma.DMALLI = (uint32_t)&lli_dac_1;
+	config_dma.DMALLI = (uint32_t) &lli_dac_1;
 
 	lli_dac_1.SrcAddr = (uint32_t) &buffer1; // tomo el buffer
 	lli_dac_1.DstAddr = (uint32_t) &(LPC_DAC->DACR);
-	lli_dac_1.NextLLI = (uint32_t) &lli_dac_2;
+	lli_dac_1.NextLLI = (uint32_t) &lli_dac_1;
 	lli_dac_1.Control = MAX_SAMPLES | (2 << 18) // ancho de origen 32 bits
 			| (2 << 21) // ancho de destino 32 bits
 			| (1 << 26); // incremento de origen;
 	// falta control
 
-	lli_dac_2.SrcAddr = (uint32_t) &buffer2; // tomo el registro
-	lli_dac_2.DstAddr = (uint32_t) &(LPC_DAC->DACR);
-	lli_dac_2.NextLLI = (uint32_t) &lli_dac_1;
-	lli_dac_2.Control = MAX_SAMPLES | (2 << 18) // ancho de origen 32 bits
-			| (2 << 21) // ancho de destino 32 bits
-			| (1 << 26);
 	GPDMA_Setup(&config_dma);
 	GPDMA_Init();
 
 }
 
 void configDAC(void) {
-	DAC_CONVERTER_CFG_Type config_dac;
-	config_dac.DMA_ENA = 1; // habilito dma
-	config_dac.CNT_ENA = 1; // habilito time out
-	config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
+	//DAC_CONVERTER_CFG_Type config_dac;
+	//config_dac.DMA_ENA = 1; // habilito dma
+	//config_dac.CNT_ENA = 1; // habilito time out
+	//config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
 	// faltaria configurar el time out o calcularlo en funcion de la frecuencia de la señal
 	// Time_out = (25000000)/(Fseñal * N_muestras)
 	DAC_Init(LPC_DAC);
 	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz
-	float t_out = 1.0f / (frec * (MAX_SAMPLES * 2.0f));
-	int time_out_value = (int) (t_out * (float) PCLK );
-	DAC_SetDMATimeOut(LPC_DAC, time_out_value);
-	DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
-
-}
-
-void DMA_IRQHandler() {
-	if (GPDMA_IntGetStatus(GPDMA_STAT_INT, 0) == 1) {
-		if (GPDMA_IntGetStatus(GPDMA_STAT_INTTC, 0)) {
-			switch (banco) {
-			case 0:
-				for (int i = 0; i < MAX_SAMPLES; i++) {
-					buffer1[i] = (buffer1[i] >> 4) & 0xFFF; // desplazo y limpio
-					buffer1[i] = (buffer1[i] << 6);
-				}
-				GPDMA_ChannelCmd(1, ENABLE); // habilito canal 1
-				break;
-			case 1:
-				for (int i = 0; i < MAX_SAMPLES; i++) {
-					buffer2[i] = (buffer2[i] >> 4) & 0xFFF;
-					buffer2[i] = (buffer2[i] << 6);
-
-				}
-				break;
-			}
-			banco ^= 1;
-			GPDMA_ClearIntPending(GPDMA_STATCLR_INTTC, 0);
-		}
-	}
+	//float t_out = 1.0f / (frec * (MAX_SAMPLES * 2.0f));
+	//int time_out_value = (int) (t_out * (float) PCLK);
+	//DAC_SetDMATimeOut(LPC_DAC, time_out_value);
+	//DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
 
 }
 

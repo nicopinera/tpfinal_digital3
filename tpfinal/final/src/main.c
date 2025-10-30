@@ -2,10 +2,11 @@
 
  Idea: La PC puede pedir al LPC1769 que:
 
- - Lea una señal analógica (ADC con DMA): si se utiliza la opcion de captuar una señal utilizaria con el adc utilizo un canal de DMA y dos listas enlazadas
- para ir guardando datos. El adc se triggerea con el timer para settear una frecuencia de muestreo. Tiene que haber un comando
+ - Lea una señal analógica (ADC): si se utiliza la opcion de capturar una señal utilizaria con el adc y
+ en cada interrupcion envio los datos por UART. El adc se triggerea con el timer para settear una frecuencia
+ de muestreo. Tiene que haber un comando
 
- - Genere una onda por DAC seno o rampa (también vía DMA):
+ - Genere una onda por DAC seno o rampa (vía DMA):
 
  En la PC se muestra la señal capturada o generada (por ejemplo en Python). Qué integra
 
@@ -30,7 +31,7 @@
 #include "lpc17xx_timer.h"
 #include <stdint.h>
 
-volatile int adc_on = 1;
+volatile int opc = 1;
 volatile int banco = 0; // 0 -> buffer 1 | 1 -> buffer 2
 volatile int frec = 10000; // setear la frecuencia de la onda
 
@@ -38,41 +39,41 @@ volatile int frec = 10000; // setear la frecuencia de la onda
 Pines pines_uso[] = { { 0, 22, FUNC_0, MODE_0 }, // P0.22 - Funcion GPIO
 		{ 0, 23, FUNC_1, MODE_2 }, // AD0.0 para capturar la señal
 		{ 3, 25, FUNC_0, MODE_0 }, // led
-		{ 0, 26, FUNC_2, MODE_2 }, };
+		{ 0, 26, FUNC_2, MODE_2 }, // VOUT DAC
+		};
 
 // ALMACENA LA FUNCION GENERADA (Seno, rampa, etc)
-uint32_t buffer[MAX_SAMPLES]; // buffer 1 para muestras del ADC
+uint32_t buffer[MAX_SAMPLES]; // buffer para guardar la señal generada
 
 // Calculo del numero de pines
 const int NUM_PINES = sizeof(pines_uso) / sizeof(pines_uso[0]);
 
 void configPIN(void); // Configuracion de GPIO
 void configADC(void); // Configuracion del ADC
-void configDAC(void); // configuracion del DAC
+void configDAC_sinDMA(void); // configuracion del DAC
+void configDAC_conDMA(void);
 void configDMA(void); // Configuracion de DMA
 void configTIMER(void); // configuracion de Timer
 void configUART(void); // Configuracion de comunicacion UART
-void set_mat_frec(int frecuencia);
 
 int main(void) {
 	SystemInit();
 	configPIN();
 	configADC();
 	configDMA();
-	configDAC();
 
 	while (1) {
-		switch (adc_on) {
+		switch (opc) {
 		case 0: // prendo el adc
 			set_mat_frec(frec);
 			TIM_Cmd(LPC_TIM0, 1); // habilito timer 0
 			ADC_ChannelCmd(LPC_ADC, 0, 1); // habilito el canal 0
+			configDAC_sinDMA();
 			GPIO_ClearValue(3, 1 << 25);
 			break;
 		case 1: // apago el adc
 			TIM_Cmd(LPC_TIM0, DISABLE);
 			ADC_ChannelCmd(LPC_ADC, 0, DISABLE); // Deshabilito el canal 0
-			GPDMA_ChannelCmd(0, DISABLE); // habilito canal 0
 			GPIO_ClearValue(0, 1 << 22);
 			break;
 		}
@@ -100,22 +101,14 @@ void configADC(void) {
 	ADC_Init(LPC_ADC, 200000);
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
 	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
-	// Falta configurar la interrupcion
-	//ADC_IntConfig(LPC_ADC, NewState)
+	ADC_IntConfig(LPC_ADC, ADC_ADINTEN0, ENABLE);
 	NVIC_EnableIRQ(ADC_IRQn); // habilito la int
 }
 
-void ADC_IRQHandler(){
-	int valor = ADC_GetData(0); // tomo los datos ya corregidos
+void ADC_IRQHandler() {
+	uint32_t valor = ADC_ChannelGetData(LPC_ADC, 0); // tomo los datos ya corregidos
 	valor = valor << 4; // corro 4 para que se ignoren los menos significativos
 	DAC_UpdateValue(LPC_DAC, valor); // pongo el dato en el DAC
-}
-
-void set_mat_frec(int frecuencia) {
-	float t_match = 1.0f / (frecuencia * (MAX_SAMPLES * 2.0f));
-	int match_value = (int) ((t_match * (float) PCLK / (float) (PR_TICK_1 + 1))
-			- 1.0f);
-	TIM_UpdateMatchValue(LPC_TIM0, 1, match_value);
 }
 
 void configTIMER(void) {
@@ -149,32 +142,37 @@ void configDMA(void) {
 	config_dma.DstConn = GPDMA_CONN_DAC;
 	config_dma.DMALLI = (uint32_t) &lli_dac_1;
 
-	lli_dac_1.SrcAddr = (uint32_t) &buffer1; // tomo el buffer
+	lli_dac_1.SrcAddr = (uint32_t) &buffer; // tomo el buffer
 	lli_dac_1.DstAddr = (uint32_t) &(LPC_DAC->DACR);
 	lli_dac_1.NextLLI = (uint32_t) &lli_dac_1;
 	lli_dac_1.Control = MAX_SAMPLES | (2 << 18) // ancho de origen 32 bits
 			| (2 << 21) // ancho de destino 32 bits
 			| (1 << 26); // incremento de origen;
-	// falta control
 
 	GPDMA_Setup(&config_dma);
 	GPDMA_Init();
 
 }
 
-void configDAC(void) {
-	//DAC_CONVERTER_CFG_Type config_dac;
-	//config_dac.DMA_ENA = 1; // habilito dma
-	//config_dac.CNT_ENA = 1; // habilito time out
-	//config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
-	// faltaria configurar el time out o calcularlo en funcion de la frecuencia de la señal
-	// Time_out = (25000000)/(Fseñal * N_muestras)
+void configDAC_sinDMA(void) {
+	DAC_CONVERTER_CFG_Type config_dac;
+	config_dac.DMA_ENA = 0; // habilito dma
+	config_dac.CNT_ENA = 0; // habilito time out
+	config_dac.DBLBUF_ENA = 0;
 	DAC_Init(LPC_DAC);
 	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz
-	//float t_out = 1.0f / (frec * (MAX_SAMPLES * 2.0f));
-	//int time_out_value = (int) (t_out * (float) PCLK);
-	//DAC_SetDMATimeOut(LPC_DAC, time_out_value);
-	//DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
+	DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
+}
 
+void configDAC_conDMA(void) {
+	DAC_CONVERTER_CFG_Type config_dac;
+	config_dac.DMA_ENA = 1; // habilito dma
+	config_dac.CNT_ENA = 1; // habilito time out
+	config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
+	// faltaria configurar el time out o calcularlo en funcion de la frecuencia de la señal
+	//Time_out = (25000000)/(Fseñal * N_muestras)
+	uint32_t t_out = (uint32_t) ((float) PCLK / (frec * (float) MAX_SAMPLES)); // calculo del time_out en funcion de los valores de la señal
+	DAC_SetDMATimeOut(LPC_DAC, t_out); // Hay que ponerle el valor en TICKS
+	DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
 }
 

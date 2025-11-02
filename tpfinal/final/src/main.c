@@ -18,6 +18,15 @@
  Timer: Controla frecuencia de muestreo
  UART: Intercambia comandos y muestras con la PC
  *
+ * Genere una onda por DAC seno o rampa (también vía DMA)
+ * En la PC se muestra la señal capturada o generada (por ejemplo en Python). Qué integra
+ *
+ * Requisito: Uso
+ * ADC: Captura la señal
+ * DAC: Reproduce la señal o genera una que se vera en un osciloscopio
+ * DMA: Mueve buffers ADC ↔ memoria ↔ DAC
+ * Timer: Controla frecuencia de muestreo
+ * UART: Intercambia comandos y muestras con la PC
  * */
 
 #include "LPC17xx.h"
@@ -166,8 +175,8 @@ void configDAC_sinDMA(void) {
 
 void configDAC_conDMA(void) {
 	DAC_CONVERTER_CFG_Type config_dac;
-	config_dac.DMA_ENA = 1; // habilito dma
-	config_dac.CNT_ENA = 1; // habilito time out
+	config_dac.DMA_ENA = SET; // habilito dma
+	config_dac.CNT_ENA = SET; // habilito time out
 	config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
 	// faltaria configurar el time out o calcularlo en funcion de la frecuencia de la señal
 	//Time_out = (25000000)/(Fseñal * N_muestras)

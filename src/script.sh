@@ -1,7 +1,3 @@
-cd ..
+winget install GnuWin32.Make
 
-python3 -m venv venv
-
-pip install pyserial
-
-source venv/bin/activate
+make --version

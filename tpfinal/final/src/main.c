@@ -8,8 +8,13 @@
 #include "lpc17xx_timer.h"
 #include <stdint.h>
 
-#define PR_TICK_1 4 // valor en ticks del pre scaler 1
-#define MAX_SAMPLES 100 // hay que cambiarlo a posterior para que sea variable y seteable por el usuario
+// valor en ticks del pre scaler 1
+#define PR_TICK_1 4
+
+// hay que cambiarlo a posterior para que sea variable y seteable por el usuario
+#define MAX_SAMPLES 100
+
+// Frecuencia de perifericos
 #define PCLK 25000000
 
 // define para DMA del ADC
@@ -18,8 +23,13 @@
 #define D_INCREMENT (1<<27) // se incrementa el destino
 #define INT_FIN (1<<31)
 
+// opcion de prueba
 volatile int opc = 0;
-volatile int frec = 10000; // setear la frecuencia de la onda
+
+// settear la frecuencia de la onda
+volatile int frec = 10000;
+
+volatile int interrupcion_t = 0;
 
 // ALMACENA LA FUNCION GENERADA (Seno, rampa, etc)
 uint32_t buffer[MAX_SAMPLES]; // buffer para guardar la señal generada
@@ -27,72 +37,93 @@ uint32_t buffer[MAX_SAMPLES]; // buffer para guardar la señal generada
 void configPIN(void) {
 	// Configuración de pines
 	PINSEL_CFG_Type pin;
-	pin.Portnum = 0;
-	pin.Pinnum = 22;
-	pin.Funcnum = 0;
-	pin.OpenDrain = 0;
-	pin.Pinmode = PINSEL_PINMODE_PULLUP;
+	pin.Portnum = 0; // puerto 0
+	pin.Pinnum = 22; // pin 22 -> led rojo
+	pin.Funcnum = 0; // funcion GPIO
+	pin.OpenDrain = 0; // open drain 0
+	pin.Pinmode = PINSEL_PINMODE_PULLUP; // Pull up
 	PINSEL_ConfigPin(&pin);
 	GPIO_SetDir(0, 1 << 22, 1); // salida
 	GPIO_ClearValue(0, 1 << 22); // prendo led rojo
 
-	pin.Portnum = 0;
+	pin.Portnum = 0; // puerto 0
 	pin.Pinnum = 24; // AD1
-	pin.Funcnum = 1;
-	pin.OpenDrain = 0;
-	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
+	pin.Funcnum = 1; // Funcion AD1
+	pin.OpenDrain = 0; // Open drain 0
+	pin.Pinmode = PINSEL_PINMODE_TRISTATE; // tristate
 	PINSEL_ConfigPin(&pin);
 
-	pin.Portnum = 0;
-	pin.Pinnum = 26;
-	pin.Funcnum = 1;
+	pin.Portnum = 0; // puerto 0
+	pin.Pinnum = 26; // pin 26
+	pin.Funcnum = 2; // Funcion VOUT
 	pin.OpenDrain = 0;
-	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
+	pin.Pinmode = PINSEL_PINMODE_TRISTATE; // Tristate
 	PINSEL_ConfigPin(&pin);
 
 }
 void configADC(void) {
-	ADC_Init(LPC_ADC, 200000);
-	//ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
-	//ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
-	ADC_IntConfig(LPC_ADC, ADC_ADINTEN1, ENABLE);
-	ADC_ChannelCmd(LPC_ADC, 1, ENABLE);
-	NVIC_EnableIRQ(ADC_IRQn); // habilito la int
+	ADC_Init(LPC_ADC, 200000); // Se configura a 200KHz
+	ADC_IntConfig(LPC_ADC, ADC_ADINTEN1, DISABLE); // Habilito la interrupcion del canal 1
+    ADC_BurstCmd(LPC_ADC, DISABLE);
+	ADC_ChannelCmd(LPC_ADC, 1, ENABLE); // habilito el canal 1
+	//NVIC_EnableIRQ(ADC_IRQn); // habilito la int en el NVIC
 }
 void configDAC_sinDMA(void) {
-	DAC_Init(LPC_DAC);
-	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz
+	DAC_Init(LPC_DAC); // Inicio el DAC
+	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz -> bias en 0
 }
 
 void configTIMER(void) {
 	TIM_TIMERCFG_Type config_pre;
-	config_pre.PrescaleOption = TIM_PRESCALE_TICKVAL;
-	config_pre.PrescaleValue = PR_TICK_1;
+	config_pre.PrescaleOption = TIM_PRESCALE_TICKVAL; // Prescaler en ticks
+	config_pre.PrescaleValue = PR_TICK_1; // lo pongo en 4
 
 	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &config_pre); // configuro el pre scaler
 
 	TIM_MATCHCFG_Type config_timer;
-	config_timer.MatchChannel = 1;
-	config_timer.IntOnMatch = ENABLE;
+	config_timer.MatchChannel = 1; // canal del match 1
+	config_timer.IntOnMatch = ENABLE; // habilito la interrupcion
 	config_timer.ResetOnMatch = ENABLE; // resetea en match
-	config_timer.StopOnMatch = DISABLE;
-	config_timer.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-	config_timer.MatchValue = 100000;
+	config_timer.StopOnMatch = DISABLE; // deshabilito el stop
+	config_timer.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE; // external match nothing
+	config_timer.MatchValue = 100000; // Match de arranque, se modifica con set frec
 	TIM_ConfigMatch(LPC_TIM0, &config_timer);
-	NVIC_EnableIRQ(TIMER0_IRQn);
+	NVIC_EnableIRQ(TIMER0_IRQn); // habilito la interrupcion
+	TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT); //Limpio bandera de interrupcion del timer0
 }
 
-void set_mat_frec(int frecuencia) {
-	float match = ((float) PCLK / ((float) frecuencia * (PR_TICK_1 + 1)))
-			- 1.0f;
+/* Calcula y actualiza MR1 para que el evento de match ocurra a 'frecuencia' Hz.
+ - Si usas PR_TICK como PrescaleValue en TIM_Init, el factor real es (PR_TICK + 1).
+ - Usa entero de 64 bits para evitar overflow en la multiplicación (frecuencia * pres).
+ - Aplica redondeo al entero más cercano. */
+void set_mat_frec(uint32_t frecuencia) {
+	if (frecuencia == 0U)
+		return; // evitar división por cero
+
+	uint32_t pres = (uint32_t) PR_TICK_1 + 1ULL; // PR + 1
+	uint32_t denom = (uint32_t) frecuencia * pres;
+
+	// redondeo: (PCLK + denom/2) / denom - 1
+	uint32_t match = 0U;
+	if (denom != 0ULL) {
+		match = (uint32_t) (((uint32_t) PCLK + (denom / 2ULL)) / denom - 1ULL);
+	}
+
 	TIM_UpdateMatchValue(LPC_TIM0, 1, match);
 }
 
+/*
+ void set_mat_frec(int frecuencia) {
+ float match = ((float) PCLK / ((float) frecuencia * (PR_TICK_1 + 1)))
+ - 1.0f;
+ TIM_UpdateMatchValue(LPC_TIM0, 1, match);
+ }
+ */
 int main(void) {
 	SystemInit();
 	configPIN();
 	configADC();
-	configTimer();
+	configTIMER();
 	set_mat_frec(frec);
 	configDAC_sinDMA();
 
@@ -102,15 +133,25 @@ int main(void) {
 }
 
 void TIMER0_IRQHandler(void) {
-	ADC_StartCmd(LPC_ADC, ADC_START_NOW); // activo el adc por cada interrupcion del timer
-	TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT); // limpio bandera
+	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR0_INT) == SET) {
+
+		ADC_StartCmd(LPC_ADC, ADC_START_NOW);
+
+		while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
+			; // espero a que termine la conversion
+
+		uint16_t ADC0Value = 0;
+		ADC0Value = ADC_ChannelGetData(LPC_ADC, 1); // tomo el valor
+		ADC0Value = ADC0Value << 4;
+		DAC_UpdateValue(LPC_DAC, ADC0Value); // lo envio al DAC
+
+		//TIM_Cmd(LPC_TIM0, ENABLE); //inicia el timer
+		TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT); //Limpio bandera de interrupcion del timer0
+	}
 }
 
 void ADC_IRQHandler() {
-	uint16_t ADC0Value = 0;
-	ADC0Value = ADC_ChannelGetData(LPC_ADC, 1);
-	ADC0Value = ADC0Value << 4;
-	DAC_UpdateValue(LPC_DAC, ADC0Value);
+
 	LPC_ADC->ADGDR &= LPC_ADC->ADGDR;
 	return;
 }

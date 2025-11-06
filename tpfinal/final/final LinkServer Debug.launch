@@ -9,7 +9,8 @@
     <booleanAttribute key="com.crt.ctrlcenter.crtInit" value="true"/>
     <stringAttribute key="com.crt.ctrlcenter.currentWireType" value="SWD"/>
     <booleanAttribute key="com.crt.ctrlcenter.mainBreakIsHardware" value="true"/>
-    <stringAttribute key="com.crt.ctrlcenter.serialNumber" value="LinkServerNXP SemiconductorsLPC11U3x CMSIS-DAP v1.0.407009025"/>
+    <booleanAttribute key="com.crt.ctrlcenter.saveState" value="true"/>
+    <stringAttribute key="com.crt.ctrlcenter.serialNumber" value="LinkServerNXP CMSIS-DAPNXP CMSIS-DAPUNKNOWN_SERIAL"/>
     <listAttribute key="com.crt.ctrlcenter.symbolsAndImagesGroupSettings"/>
     <intAttribute key="com.crt.ctrlcenter.version" value="6"/>
     <stringAttribute key="com.nxp.mcuxpresso.flash.base.address" value="0x0"/>
@@ -19,8 +20,8 @@
     <stringAttribute key="com.nxp.mcuxpresso.flash.executable" value="axf"/>
     <stringAttribute key="com.nxp.mcuxpresso.flash.program.action" value="Program"/>
     <booleanAttribute key="com.nxp.mcuxpresso.flash.reset.target" value="true"/>
-    <stringAttribute key="com.nxp.mcuxpresso.ide.probe.manufacturer" value="NXP Semiconductors"/>
-    <stringAttribute key="com.nxp.mcuxpresso.ide.probe.name" value="LPC11U3x CMSIS-DAP v1.0.4"/>
+    <stringAttribute key="com.nxp.mcuxpresso.ide.probe.manufacturer" value="NXP CMSIS-DAP"/>
+    <stringAttribute key="com.nxp.mcuxpresso.ide.probe.name" value="NXP CMSIS-DAP"/>
     <stringAttribute key="com.nxp.mcuxpresso.ide.probe.type" value="LinkServer"/>
     <stringAttribute key="debug.level" value="2"/>
     <stringAttribute key="emu.speed" value=""/>
@@ -28,7 +29,9 @@
     <stringAttribute key="gdbserver.host" value="localhost"/>
     <stringAttribute key="gdbserver.port" value="10989"/>
     <booleanAttribute key="gdbserver.start" value="true"/>
+    <booleanAttribute key="internal.cache" value="false"/>
     <stringAttribute key="internal.connect.script" value=""/>
+    <stringAttribute key="internal.core.index" value=""/>
     <booleanAttribute key="internal.has_swo" value="true"/>
     <stringAttribute key="internal.prelaunch.command" value=""/>
     <stringAttribute key="internal.reset.script" value=""/>
@@ -75,11 +78,12 @@
     <intAttribute key="org.eclipse.cdt.launch.ATTR_BUILD_BEFORE_LAUNCH_ATTR" value="2"/>
     <stringAttribute key="org.eclipse.cdt.launch.DEBUGGER_ID" value="gdb"/>
     <stringAttribute key="org.eclipse.cdt.launch.DEBUGGER_START_MODE" value="remote"/>
-    <stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="Debug\final.axf"/>
+    <stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="/home/nico/Facultad/tpfinal_digital3/tpfinal/final/Debug/final.axf"/>
     <stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="final"/>
     <booleanAttribute key="org.eclipse.cdt.launch.PROJECT_BUILD_CONFIG_AUTO_ATTR" value="false"/>
     <stringAttribute key="org.eclipse.cdt.launch.PROJECT_BUILD_CONFIG_ID_ATTR" value="com.crt.advproject.config.exe.debug.629305333"/>
     <booleanAttribute key="org.eclipse.cdt.launch.use_terminal" value="false"/>
+    <booleanAttribute key="org.eclipse.debug.core.ATTR_FORCE_SYSTEM_CONSOLE_ENCODING" value="false"/>
     <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS">
         <listEntry value="/final"/>
     </listAttribute>

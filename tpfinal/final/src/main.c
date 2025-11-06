@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 // valor en ticks del pre scaler 1
-#define PR_TICK_1 4
+#define PR_TICK_1 4U            // Prescale value (PR = 4 -> factor real = PR+1 = 5)
 
 // hay que cambiarlo a posterior para que sea variable y seteable por el usuario
 #define MAX_SAMPLES 100
@@ -23,17 +23,15 @@
 #define D_INCREMENT (1<<27) // se incrementa el destino
 #define INT_FIN (1<<31)
 
-// opcion de prueba
-volatile int opc = 0;
-
 // settear la frecuencia de la onda
-volatile int frec = 10000;
+//volatile int frec = 10000;
 
 volatile int interrupcion_t = 0;
 
 // ALMACENA LA FUNCION GENERADA (Seno, rampa, etc)
 uint32_t buffer[MAX_SAMPLES]; // buffer para guardar la señal generada
-
+void generar_Seno();
+void generar_Rampa();
 void configPIN(void) {
 	// Configuración de pines
 	PINSEL_CFG_Type pin;
@@ -53,24 +51,11 @@ void configPIN(void) {
 	pin.Pinmode = PINSEL_PINMODE_TRISTATE; // tristate
 	PINSEL_ConfigPin(&pin);
 
-	pin.Portnum = 0; // puerto 0
-	pin.Pinnum = 26; // pin 26
-	pin.Funcnum = 2; // Funcion VOUT
-	pin.OpenDrain = 0;
-	pin.Pinmode = PINSEL_PINMODE_TRISTATE; // Tristate
-	PINSEL_ConfigPin(&pin);
-
 }
 void configADC(void) {
 	ADC_Init(LPC_ADC, 200000); // Se configura a 200KHz
-	ADC_IntConfig(LPC_ADC, ADC_ADINTEN1, DISABLE); // Habilito la interrupcion del canal 1
-    ADC_BurstCmd(LPC_ADC, DISABLE);
+	ADC_BurstCmd(LPC_ADC, DISABLE);
 	ADC_ChannelCmd(LPC_ADC, 1, ENABLE); // habilito el canal 1
-	//NVIC_EnableIRQ(ADC_IRQn); // habilito la int en el NVIC
-}
-void configDAC_sinDMA(void) {
-	DAC_Init(LPC_DAC); // Inicio el DAC
-	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz -> bias en 0
 }
 
 void configTIMER(void) {
@@ -86,10 +71,11 @@ void configTIMER(void) {
 	config_timer.ResetOnMatch = ENABLE; // resetea en match
 	config_timer.StopOnMatch = DISABLE; // deshabilito el stop
 	config_timer.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE; // external match nothing
-	config_timer.MatchValue = 100000; // Match de arranque, se modifica con set frec
+	config_timer.MatchValue = 4999; // Match de arranque, se modifica con set frec
 	TIM_ConfigMatch(LPC_TIM0, &config_timer);
+	TIM_Cmd(LPC_TIM0, ENABLE);
 	NVIC_EnableIRQ(TIMER0_IRQn); // habilito la interrupcion
-	TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT); //Limpio bandera de interrupcion del timer0
+	TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT); //Limpio bandera de interrupcion del timer0
 }
 
 /* Calcula y actualiza MR1 para que el evento de match ocurra a 'frecuencia' Hz.
@@ -122,84 +108,210 @@ void set_mat_frec(uint32_t frecuencia) {
 int main(void) {
 	SystemInit();
 	configPIN();
-	configADC();
+	//configADC();
 	configTIMER();
-	set_mat_frec(frec);
-	configDAC_sinDMA();
-
+	int i = 0;
 	while (1) {
-		GPIO_ClearValue(0, 1 << 22);
+		if (i == 0) {
+			generar_Seno();
+			i = 1;
+		}
+		//GPIO_ClearValue(0, 1 << 22);
 	}
 }
 
 void TIMER0_IRQHandler(void) {
-	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR0_INT) == SET) {
+	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET) {
 
 		ADC_StartCmd(LPC_ADC, ADC_START_NOW);
 
 		while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
 			; // espero a que termine la conversion
 
-		uint16_t ADC0Value = 0;
-		ADC0Value = ADC_ChannelGetData(LPC_ADC, 1); // tomo el valor
-		ADC0Value = ADC0Value << 4;
-		DAC_UpdateValue(LPC_DAC, ADC0Value); // lo envio al DAC
+		uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12-bit típico
+		// mapear 12-bit ADC -> 10-bit DAC (simple truncamiento)
+		uint32_t dac_val = (uint32_t) (raw >> 2) & 0x3FFU;
+		DAC_UpdateValue(LPC_DAC, dac_val);
 
 		//TIM_Cmd(LPC_TIM0, ENABLE); //inicia el timer
 		TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT); //Limpio bandera de interrupcion del timer0
 	}
 }
 
-void ADC_IRQHandler() {
+/** DMA size of transfer */
+volatile int dma_size = 60;
+volatile int num_sample = 255;
+volatile int frec = 2000;
+volatile int opc = 1;
+#define PCLK_DAC_IN_MHZ	25 //CCLK divided by 4
 
-	LPC_ADC->ADGDR &= LPC_ADC->ADGDR;
+/************************** PRIVATE VARIABLES *************************/
+
+void generar_Seno() {
+	GPDMA_Channel_CFG_Type GPDMACfg;
+	PINSEL_CFG_Type PinCfg;
+	DAC_CONVERTER_CFG_Type DAC_ConverterConfigStruct;
+	GPDMA_LLI_Type DMA_LLI_Struct;
+	uint32_t tmp;
+	uint32_t i;
+	uint32_t sin_0_to_90_16_samples[16] = { 0, 1045, 2079, 3090, 4067, 5000,
+			5877, 6691, 7431, 8090, 8660, 9135, 9510, 9781, 9945, 10000\
+ };
+	uint32_t dac_sine_lut[num_sample];
+	/*
+	 * Init DAC pin connect
+	 * AOUT on P0.26
+	 */
+	PinCfg.Funcnum = 2;
+	PinCfg.OpenDrain = 0;
+	PinCfg.Pinmode = 0;
+	PinCfg.Pinnum = 26;
+	PinCfg.Portnum = 0;
+	PINSEL_ConfigPin(&PinCfg);
+	switch (opc) {
+	case 0:
+		for (i = 0; i < num_sample; i++) {
+			if (i <= 15) {
+				dac_sine_lut[i] = 512 + 512 * sin_0_to_90_16_samples[i] / 10000;
+				if (i == 15)
+					dac_sine_lut[i] = 1023;
+			} else if (i <= 30) {
+				dac_sine_lut[i] = 512
+						+ 512 * sin_0_to_90_16_samples[30 - i] / 10000;
+			} else if (i <= 45) {
+				dac_sine_lut[i] = 512
+						- 512 * sin_0_to_90_16_samples[i - 30] / 10000;
+			} else {
+				dac_sine_lut[i] = 512
+						- 512 * sin_0_to_90_16_samples[60 - i] / 10000;
+			}
+			dac_sine_lut[i] = (dac_sine_lut[i] << 6);
+		}
+		break;
+	case 1:
+		for (i = 0; i < num_sample; i++) {
+			if (i < 32)
+				dac_sine_lut[i] = 32 * i;
+			else if (i == 32)
+				dac_sine_lut[i] = 1023;
+			else
+				dac_sine_lut[i] = 32 * (num_sample - i);
+			dac_sine_lut[i] = (dac_sine_lut[i] << 6);
+		}
+		break;
+	case 2:
+		for (i = 0; i < num_sample; i++) {
+			dac_sine_lut[i] = (1023 / 3) * (i / 16);
+			dac_sine_lut[i] = (dac_sine_lut[i] << 6);
+		}
+		break;
+	}
+
+	//Prepare DAC sine look up table
+	/**/
+	//Prepare DMA link list item structure
+	DMA_LLI_Struct.SrcAddr = (uint32_t) dac_sine_lut;
+	DMA_LLI_Struct.DstAddr = (uint32_t) &(LPC_DAC->DACR);
+	DMA_LLI_Struct.NextLLI = (uint32_t) &DMA_LLI_Struct;
+	DMA_LLI_Struct.Control = dma_size | (2 << 18) //source width 32 bit
+			| (2 << 21) //dest. width 32 bit
+			| (1 << 26) //source increment
+			;
+
+	/* GPDMA block section -------------------------------------------- */
+	/* Initialize GPDMA controller */
+	GPDMA_Init();
+
+	// Setup GPDMA channel --------------------------------
+	// channel 0
+	GPDMACfg.ChannelNum = 0;
+	// Source memory
+	GPDMACfg.SrcMemAddr = (uint32_t) (dac_sine_lut);
+	// Destination memory - unused
+	GPDMACfg.DstMemAddr = 0;
+	// Transfer size
+	GPDMACfg.TransferSize = dma_size;
+	// Transfer width - unused
+	GPDMACfg.TransferWidth = 0;
+	// Transfer type
+	GPDMACfg.TransferType = GPDMA_TRANSFERTYPE_M2P;
+	// Source connection - unused
+	GPDMACfg.SrcConn = 0;
+	// Destination connection
+	GPDMACfg.DstConn = GPDMA_CONN_DAC;
+	// Linker List Item - unused
+	GPDMACfg.DMALLI = (uint32_t) &DMA_LLI_Struct;
+	// Setup channel with given parameter
+	GPDMA_Setup(&GPDMACfg);
+
+	DAC_ConverterConfigStruct.CNT_ENA = SET;
+	DAC_ConverterConfigStruct.DMA_ENA = SET;
+	DAC_Init(LPC_DAC);
+	/* set time out for DAC*/
+	tmp = (PCLK_DAC_IN_MHZ * 1000000) / (frec * num_sample);
+	DAC_SetDMATimeOut(LPC_DAC, tmp);
+	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
+
+	// Enable GPDMA channel 0
+	GPDMA_ChannelCmd(0, ENABLE);
+
+	return;
+
+}
+
+void generar_Rampa() {
+	GPDMA_Channel_CFG_Type GPDMACfg;
+	PINSEL_CFG_Type PinCfg;
+	DAC_CONVERTER_CFG_Type DAC_ConverterConfigStruct;
+	GPDMA_LLI_Type DMA_LLI_Struct;
+	uint32_t tmp;
+	uint32_t i;
+	uint32_t dac_lut[num_sample]; // VLA, sin comprobaciones
+
+	// Init DAC pin connect (AOUT on P0.26)
+	PinCfg.Funcnum = 2;    // según tu ejemplo original
+	PinCfg.OpenDrain = 0;
+	PinCfg.Pinmode = 0;
+	PinCfg.Pinnum = 26;
+	PinCfg.Portnum = 0;
+	PINSEL_ConfigPin(&PinCfg);
+
+	// Preparar LLI (loop)
+	DMA_LLI_Struct.SrcAddr = (uint32_t) dac_lut;
+	DMA_LLI_Struct.DstAddr = (uint32_t) &(LPC_DAC->DACR);
+	DMA_LLI_Struct.NextLLI = (uint32_t) &DMA_LLI_Struct;
+	DMA_LLI_Struct.Control = (uint32_t) dma_size | (2 << 18) // source width 32 bit
+			| (2 << 21)   // dest width 32 bit
+			| (1 << 26);  // source increment
+
+	/* Inicializar GPDMA */
+	GPDMA_Init();
+
+	/* Configurar canal GPDMA */
+	GPDMACfg.ChannelNum = 0;
+	GPDMACfg.SrcMemAddr = (uint32_t) dac_lut;
+	GPDMACfg.DstMemAddr = 0;
+	GPDMACfg.TransferSize = dma_size;
+	GPDMACfg.TransferWidth = 2; // 32-bit (coincide con Control)
+	GPDMACfg.TransferType = GPDMA_TRANSFERTYPE_M2P;
+	GPDMACfg.SrcConn = 0;
+	GPDMACfg.DstConn = GPDMA_CONN_DAC;
+	GPDMACfg.DMALLI = (uint32_t) &DMA_LLI_Struct;
+	GPDMA_Setup(&GPDMACfg);
+
+	/* Inicializar DAC y configurar timeout (simple) */
+	DAC_ConverterConfigStruct.CNT_ENA = SET;
+	DAC_ConverterConfigStruct.DMA_ENA = SET;
+	DAC_ConverterConfigStruct.DBLBUF_ENA = 0;
+	DAC_Init(LPC_DAC);
+
+	tmp = (PCLK_DAC_IN_MHZ * 1000000U)
+			/ ((uint32_t) frec * (uint32_t) num_sample);
+	DAC_SetDMATimeOut(LPC_DAC, tmp);
+	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
+
+	/* Habilitar canal DMA */
+	GPDMA_ChannelCmd(0, ENABLE);
+
 	return;
 }
-
-void configDMA(void) {
-
-	GPDMA_LLI_Type lli_dac_1;
-	GPDMA_Channel_CFG_Type config_dma;
-	config_dma.ChannelNum = 1; // canal 1
-	config_dma.TransferSize = MAX_SAMPLES; // 100 muestras
-	config_dma.TransferWidth = 32; // 32 bits
-	config_dma.SrcMemAddr = (uint32_t) &buffer;
-	config_dma.DstMemAddr = 0;
-	config_dma.TransferType = GPDMA_TRANSFERTYPE_M2P; // MEMORIA -> DAC
-	config_dma.SrcConn = 0;
-	config_dma.DstConn = GPDMA_CONN_DAC;
-	config_dma.DMALLI = (uint32_t) &lli_dac_1;
-
-	lli_dac_1.SrcAddr = (uint32_t) &buffer; // tomo el buffer
-	lli_dac_1.DstAddr = (uint32_t) &(LPC_DAC->DACR);
-	lli_dac_1.NextLLI = (uint32_t) &lli_dac_1;
-	lli_dac_1.Control = MAX_SAMPLES | (2 << 18) // ancho de origen 32 bits
-			| (2 << 21) // ancho de destino 32 bits
-			| (1 << 26); // incremento de origen;
-
-	GPDMA_Init();
-	GPDMA_Setup(&config_dma);
-	//GPDMA_ChannelCmd(channel, ENABLE);
-
-}
-
-void configDAC_conDMA(void) {
-	DAC_CONVERTER_CFG_Type config_dac;
-	config_dac.DMA_ENA = SET; // habilito dma
-	config_dac.CNT_ENA = SET; // habilito time out
-	config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
-	// faltaria configurar el time out o calcularlo en funcion de la frecuencia de la señal
-	//Time_out = (25000000)/(Fseñal * N_muestras)
-	uint32_t t_out = (uint32_t) ((float) PCLK / (frec * (float) MAX_SAMPLES)); // calculo del time_out en funcion de los valores de la señal
-	DAC_SetDMATimeOut(LPC_DAC, t_out); // Hay que ponerle el valor en TICKS
-	DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
-}
-
-void generar_Seno(uint32_t buffer[], int tam) {
-
-}
-
-void generar_Rampa(uint32_t buffer[], int tam) {
-
-}
-

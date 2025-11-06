@@ -5,6 +5,7 @@
 /tpfinal/ZephyrRTOS_TAD_logs/
 /tpfinal/.mcuxpressoide_packages_support/
 .log
+main.exe
 
 venv/
 

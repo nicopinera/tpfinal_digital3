@@ -22,7 +22,7 @@ void generate_sin_0_to_90_16_samples(uint32_t out[])
         double angle_deg = (90.0 * i) / steps; // 0,6,12,...,90
         double rad = angle_deg * M_PI / 180.0;
         double v = sin(rad) * scale;
-        out[i] = (uint32_t)round(v);
+        out[i] = (uint32_t)v;
     }
 }
 

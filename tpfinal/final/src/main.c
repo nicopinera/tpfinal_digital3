@@ -53,8 +53,8 @@ void configPIN(void) {
 }
 void configADC(void) {
 	ADC_Init(LPC_ADC, 200000);
-	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
-	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
+	//ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
+	//ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
 	ADC_IntConfig(LPC_ADC, ADC_ADINTEN1, ENABLE);
 	ADC_ChannelCmd(LPC_ADC, 1, ENABLE);
 	NVIC_EnableIRQ(ADC_IRQn); // habilito la int
@@ -64,31 +64,27 @@ void configDAC_sinDMA(void) {
 	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz
 }
 
-void configTimer()
-{
-	TIM_TIMERCFG_Type configTimer;
-	configTimer.PrescaleValue = 10000;
-	configTimer.PrescaleOption = TIM_PRESCALE_TICKVAL;
+void configTIMER(void) {
+	TIM_TIMERCFG_Type config_pre;
+	config_pre.PrescaleOption = TIM_PRESCALE_TICKVAL;
+	config_pre.PrescaleValue = PR_TICK_1;
 
-	TIM_MATCHCFG_Type configMatch;
-	configMatch.IntOnMatch = DISABLE;
-	configMatch.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-	configMatch.MatchChannel = 1;
-	configMatch.MatchValue = 4999;
-	configMatch.ResetOnMatch = ENABLE;
-	configMatch.StopOnMatch = DISABLE;
+	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &config_pre); // configuro el pre scaler
 
-	TIM_ConfigMatch(LPC_TIM0, &configMatch);
-	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &configTimer);
-	TIM_Cmd(LPC_TIM0, ENABLE);
-
-	return;
+	TIM_MATCHCFG_Type config_timer;
+	config_timer.MatchChannel = 1;
+	config_timer.IntOnMatch = ENABLE;
+	config_timer.ResetOnMatch = ENABLE; // resetea en match
+	config_timer.StopOnMatch = DISABLE;
+	config_timer.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
+	config_timer.MatchValue = 100000;
+	TIM_ConfigMatch(LPC_TIM0, &config_timer);
+	NVIC_EnableIRQ(TIMER0_IRQn);
 }
-//void configUART(void); // Configuracion de comunicacion UART
-//void generar_Seno(uint32_t buffer[], int tam);
-//void generar_Rampa(uint32_t buffer[], int tam);
+
 void set_mat_frec(int frecuencia) {
-	float match = ((float)PCLK / ((float)frecuencia * (PR_TICK_1 + 1))) - 1.0f;
+	float match = ((float) PCLK / ((float) frecuencia * (PR_TICK_1 + 1)))
+			- 1.0f;
 	TIM_UpdateMatchValue(LPC_TIM0, 1, match);
 }
 
@@ -97,30 +93,27 @@ int main(void) {
 	configPIN();
 	configADC();
 	configTimer();
+	set_mat_frec(frec);
 	configDAC_sinDMA();
-
-	// prendo led rojo
 
 	while (1) {
 		GPIO_ClearValue(0, 1 << 22);
 	}
 }
 
+void TIMER0_IRQHandler(void) {
+	ADC_StartCmd(LPC_ADC, ADC_START_NOW); // activo el adc por cada interrupcion del timer
+	TIM_ClearIntPending(LPC_TIM0, TIM_MR0_INT); // limpio bandera
+}
 
-
-
-
-void ADC_IRQHandler()
-{
+void ADC_IRQHandler() {
 	uint16_t ADC0Value = 0;
-	ADC0Value=ADC_ChannelGetData(LPC_ADC, 1);
-	ADC0Value = ADC0Value<<4;
+	ADC0Value = ADC_ChannelGetData(LPC_ADC, 1);
+	ADC0Value = ADC0Value << 4;
 	DAC_UpdateValue(LPC_DAC, ADC0Value);
 	LPC_ADC->ADGDR &= LPC_ADC->ADGDR;
 	return;
 }
-
-
 
 void configDMA(void) {
 
@@ -149,8 +142,6 @@ void configDMA(void) {
 
 }
 
-
-
 void configDAC_conDMA(void) {
 	DAC_CONVERTER_CFG_Type config_dac;
 	config_dac.DMA_ENA = SET; // habilito dma
@@ -170,6 +161,4 @@ void generar_Seno(uint32_t buffer[], int tam) {
 void generar_Rampa(uint32_t buffer[], int tam) {
 
 }
-
-
 

@@ -1,21 +1,3 @@
-/*Proyecto: Mini Osciloscopio + Generador de señales
- * Idea: La PC puede pedir al LPC1769 que:
- * Lea una señal analógica (ADC con DMA): si se utiliza la opcion de captuar una señal
- * con el adc utilizo un canal de DMA y dos listas enlazadas para ir guardando datos.
- * El adc se triggerea con el timer para settear una frecuencia de muestreo. Tiene que haber un comando para iniciar el muestreo
- *
- *
- * Genere una onda por DAC seno o rampa (también vía DMA)
- * En la PC se muestra la señal capturada o generada (por ejemplo en Python). Qué integra
- *
- * Requisito: Uso
- * ADC: Captura la señal
- * DAC: Reproduce la señal o genera una que se vera en un osciloscopio
- * DMA: Mueve buffers ADC ↔ memoria ↔ DAC
- * Timer: Controla frecuencia de muestreo
- * UART: Intercambia comandos y muestras con la PC
- * */
-
 #include "LPC17xx.h"
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_gpio.h"
@@ -23,113 +5,171 @@
 #include "lpc17xx_gpdma.h"
 #include "lpc17xx_adc.h"
 #include "lpc17xx_dac.h"
-#include "func_config.h"
 #include "lpc17xx_timer.h"
 #include <stdint.h>
 
-// Definimos los Pines en un arreglo
-Pines pines_uso[] = { { 0, 22, FUNC_0 }, // P2.12 - Funcion GPIO
-		{ 0, 23, FUNC_1 }, // AD0.0 para capturar la señal
-		{ 0, 26, FUNC_1 }, // AOUT del DAC
-		{ 0, 2, FUNC_1 }, // TXD0 UART
-		{ 0, 3, FUNC_1 }, // RXD0 UART
-		};
+#define PR_TICK_1 4 // valor en ticks del pre scaler 1
+#define MAX_SAMPLES 100 // hay que cambiarlo a posterior para que sea variable y seteable por el usuario
+#define PCLK 25000000
 
-// se puede usar un solo buffer?
-uint16_t buffer1[MAX_SAMPLES]; // buffer 1 para muestras del ADC
-uint16_t buffer2[MAX_SAMPLES]; // buffer 2 para muestras del ADC
+// define para DMA del ADC
+#define S_TRANF_WIDTH (1<<18) // Source transfer width -> 16 bits
+#define D_TRANF_WIDTH (1<<21) // Destination transfer width -> 16 bits
+#define D_INCREMENT (1<<27) // se incrementa el destino
+#define INT_FIN (1<<31)
 
-// Calculo del numero de pines
-const int NUM_PINES = sizeof(pines_uso) / sizeof(pines_uso[0]);
+volatile int opc = 0;
+volatile int frec = 10000; // setear la frecuencia de la onda
 
-void configPIN(void); // Configuracion de GPIO
-void configADC(void); // Configuracion del ADC
-void configDAC(void); // configuracion del DAC
-void configDMA(void); // Configuracion de DMA
-void configTIMER(void); // configuracion de Timer
-void configUART(void); // Configuracion de comunicacion UART
+// ALMACENA LA FUNCION GENERADA (Seno, rampa, etc)
+uint32_t buffer[MAX_SAMPLES]; // buffer para guardar la señal generada
+
+void configPIN(void) {
+	// Configuración de pines
+	PINSEL_CFG_Type pin;
+	pin.Portnum = 0;
+	pin.Pinnum = 22;
+	pin.Funcnum = 0;
+	pin.OpenDrain = 0;
+	pin.Pinmode = PINSEL_PINMODE_PULLUP;
+	PINSEL_ConfigPin(&pin);
+	GPIO_SetDir(0, 1 << 22, 1); // salida
+	GPIO_ClearValue(0, 1 << 22); // prendo led rojo
+
+	pin.Portnum = 0;
+	pin.Pinnum = 24; // AD1
+	pin.Funcnum = 1;
+	pin.OpenDrain = 0;
+	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
+	PINSEL_ConfigPin(&pin);
+
+	pin.Portnum = 0;
+	pin.Pinnum = 26;
+	pin.Funcnum = 1;
+	pin.OpenDrain = 0;
+	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
+	PINSEL_ConfigPin(&pin);
+
+}
+void configADC(void) {
+	ADC_Init(LPC_ADC, 200000);
+	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
+	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
+	ADC_IntConfig(LPC_ADC, ADC_ADINTEN1, ENABLE);
+	ADC_ChannelCmd(LPC_ADC, 1, ENABLE);
+	NVIC_EnableIRQ(ADC_IRQn); // habilito la int
+}
+void configDAC_sinDMA(void) {
+	DAC_Init(LPC_DAC);
+	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz
+}
+
+void configTimer()
+{
+	TIM_TIMERCFG_Type configTimer;
+	configTimer.PrescaleValue = 10000;
+	configTimer.PrescaleOption = TIM_PRESCALE_TICKVAL;
+
+	TIM_MATCHCFG_Type configMatch;
+	configMatch.IntOnMatch = DISABLE;
+	configMatch.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
+	configMatch.MatchChannel = 1;
+	configMatch.MatchValue = 4999;
+	configMatch.ResetOnMatch = ENABLE;
+	configMatch.StopOnMatch = DISABLE;
+
+	TIM_ConfigMatch(LPC_TIM0, &configMatch);
+	TIM_Init(LPC_TIM0, TIM_TIMER_MODE, &configTimer);
+	TIM_Cmd(LPC_TIM0, ENABLE);
+
+	return;
+}
+//void configUART(void); // Configuracion de comunicacion UART
+//void generar_Seno(uint32_t buffer[], int tam);
+//void generar_Rampa(uint32_t buffer[], int tam);
+void set_mat_frec(int frecuencia) {
+	float match = ((float)PCLK / ((float)frecuencia * (PR_TICK_1 + 1))) - 1.0f;
+	TIM_UpdateMatchValue(LPC_TIM0, 1, match);
+}
 
 int main(void) {
 	SystemInit();
 	configPIN();
 	configADC();
-	configDMA();
-	configDAC();
+	configTimer();
+	configDAC_sinDMA();
+
+	// prendo led rojo
 
 	while (1) {
-		GPIO_ClearValue(pines_uso[0].puerto, 1 << pines_uso[0].pin); // prendo led rojo
+		GPIO_ClearValue(0, 1 << 22);
 	}
 }
 
-void configPIN(void) {
-	// Configuración de pines
-	PINSEL_CFG_Type pin;
-	for (int i = 0; i < NUM_PINES; i++) {
-		pin.Portnum = pines_uso[i].puerto;
-		pin.Pinnum = pines_uso[i].pin;
-		pin.Funcnum = pines_uso[i].func;
-		pin.Pinmode = 0;
-		pin.OpenDrain = 0;
-		PINSEL_ConfigPin(&pin);
-		GPIO_SetDir(pines_uso[i].puerto, 1 << pines_uso[i].pin, 1);
-	}
+
+
+
+
+void ADC_IRQHandler()
+{
+	uint16_t ADC0Value = 0;
+	ADC0Value=ADC_ChannelGetData(LPC_ADC, 1);
+	ADC0Value = ADC0Value<<4;
+	DAC_UpdateValue(LPC_DAC, ADC0Value);
+	LPC_ADC->ADGDR &= LPC_ADC->ADGDR;
+	return;
 }
 
-void configADC(void) {
-	ADC_Init(LPC_ADC, 200000);
-	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // INICIA CON EL TIMER 0 - MATCH 1
-	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING); // CADA FLANCO DE SUBIDA
-	ADC_ChannelCmd(LPC_ADC, ADC_CHANNEL_0, ENABLE); // HABILITO CANAL 0
-}
 
-void configTIMER(void) {
-	// EL periodo de la señal es 1/fseñal
-	// el numero de muestras sera de 200 que es el maximo para los dos buffer
-	// entonces el timer tiene que habr una muestra cada (1/fseñal*200)
-	// Por ende el timer tiene que hacer el toggle a la mitad de ese periodo
-}
 
 void configDMA(void) {
-	GPDMA_LLI_Type lli_adc_1;
-	GPDMA_LLI_Type lli_adc_2;
+
+	GPDMA_LLI_Type lli_dac_1;
 	GPDMA_Channel_CFG_Type config_dma;
-	config_dma.ChannelNum = 0; // canal 0
+	config_dma.ChannelNum = 1; // canal 1
 	config_dma.TransferSize = MAX_SAMPLES; // 100 muestras
 	config_dma.TransferWidth = 32; // 32 bits
-	config_dma.SrcMemAddr = 0;
-	config_dma.DstMemAddr = (uint32_t) &buffer1;
-	config_dma.TransferType = GPDMA_TRANSFERTYPE_P2M; // ADC -> MEMORIA
-	config_dma.SrcConn = GPDMA_CONN_ADC; // ADC
-	config_dma.DstConn = 0;
-	config_dma.DMALLI = (uint32_t) &lli_adc_1; // puntero?
+	config_dma.SrcMemAddr = (uint32_t) &buffer;
+	config_dma.DstMemAddr = 0;
+	config_dma.TransferType = GPDMA_TRANSFERTYPE_M2P; // MEMORIA -> DAC
+	config_dma.SrcConn = 0;
+	config_dma.DstConn = GPDMA_CONN_DAC;
+	config_dma.DMALLI = (uint32_t) &lli_dac_1;
 
-	lli_adc_1.SrcAddr = (uint32_t) &(LPC_ADC->ADGDR); // tomo el registro completo
-	lli_adc_1.DstAddr = (uint32_t) &buffer1; // faltaria &?
-	lli_adc_1.NextLLI = (uint32_t) &lli_adc_2;
-	lli_adc_1.Control = T_SIZE | S_TRANF_WIDTH | D_TRANF_WIDTH | D_INCREMENT;
-
-	lli_adc_2.SrcAddr = (uint32_t) &(LPC_ADC->ADGDR); // tomo el registro
-	lli_adc_2.DstAddr = (uint32_t) &buffer2;
-	lli_adc_2.NextLLI = (uint32_t) &lli_adc_1;
-	lli_adc_2.Control = T_SIZE | S_TRANF_WIDTH | D_TRANF_WIDTH | D_INCREMENT;
+	lli_dac_1.SrcAddr = (uint32_t) &buffer; // tomo el buffer
+	lli_dac_1.DstAddr = (uint32_t) &(LPC_DAC->DACR);
+	lli_dac_1.NextLLI = (uint32_t) &lli_dac_1;
+	lli_dac_1.Control = MAX_SAMPLES | (2 << 18) // ancho de origen 32 bits
+			| (2 << 21) // ancho de destino 32 bits
+			| (1 << 26); // incremento de origen;
 
 	GPDMA_Init();
 	GPDMA_Setup(&config_dma);
-	GPDMA_ChannelCmd(0, ENABLE); // habilito canal 0
+	//GPDMA_ChannelCmd(channel, ENABLE);
 
 }
 
-void configDAC(void) {
+
+
+void configDAC_conDMA(void) {
 	DAC_CONVERTER_CFG_Type config_dac;
 	config_dac.DMA_ENA = SET; // habilito dma
 	config_dac.CNT_ENA = SET; // habilito time out
 	config_dac.DBLBUF_ENA = 0; // no habilito el buffer interno
 	// faltaria configurar el time out o calcularlo en funcion de la frecuencia de la señal
-	// Time_out = (25000000)/(Fseñal * N_muestras)
-	// tmp = (PCLK_DAC_IN_MHZ*1000000)/(FREC_SEÑAL*MAX_SAMPLES);
-	DAC_Init(LPC_DAC);
-	DAC_SetBias(LPC_DAC, 0); // seteo la frecuencia en 1MHz
+	//Time_out = (25000000)/(Fseñal * N_muestras)
+	uint32_t t_out = (uint32_t) ((float) PCLK / (frec * (float) MAX_SAMPLES)); // calculo del time_out en funcion de los valores de la señal
+	DAC_SetDMATimeOut(LPC_DAC, t_out); // Hay que ponerle el valor en TICKS
 	DAC_ConfigDAConverterControl(LPC_DAC, &config_dac);
+}
+
+void generar_Seno(uint32_t buffer[], int tam) {
 
 }
+
+void generar_Rampa(uint32_t buffer[], int tam) {
+
+}
+
+
 

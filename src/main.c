@@ -37,7 +37,7 @@ void generar_triangulo(uint32_t out[])
             out[i] = 1023;
         else
             out[i] = 32 * (NUM_SAMPLE - i);
-        out[i] = (out[i] << 6);
+        //out[i] = (out[i] << 6);
     }
 }
 
@@ -53,7 +53,7 @@ void generar_triangulo2(uint32_t out[])
             out[i] = 1023;
         else
             out[i] = paso * (NUM_SAMPLE - i);
-        out[i] = (out[i] << 6);
+        //out[i] = (out[i] << 6);
     }
 }
 
@@ -63,7 +63,7 @@ void generar_escalonado(uint32_t out[])
     for (int i = 0; i < NUM_SAMPLE; i++)
     {
         out[i] = (1023 / ESCALONES) * (i / (NUM_SAMPLE / ESCALONES));
-        out[i] = (out[i] << 6);
+        //out[i] = (out[i] << 6);
     }
 }
 

@@ -2,7 +2,6 @@ SHELL := /bin/bash
 
 comp:
 	gcc src/main.c -o main -lm
-	cd src
 	./main
 
 # en Windous OS = Windows_NT

@@ -19,6 +19,7 @@
 #include "lpc17xx_adc.h"
 #include "lpc17xx_dac.h"
 #include "lpc17xx_timer.h"
+#include "lpc17xx_uart.h"
 #include <math.h>
 #include <stdint.h>
 
@@ -50,7 +51,7 @@
 #define DEBOUNCE_MS 20
 
 /* ------------------ Variables globales ------------------ */
-volatile int frec = 2000;
+volatile int frec = 4000;
 volatile int opc = DAC_GENERATE_NONE; // valor elegido por el DIP (volatile por acceso desde ISR)
 
 static GPDMA_LLI_Type dma_lli;             // LLI persistente (no en pila)
@@ -63,6 +64,21 @@ volatile uint8_t debounce_pending = 0;
 
 /* Flag que indica si estamos en modo ADC+TIMER (leer ADC y pasar al DAC) */
 volatile uint8_t adc_timer_mode_enabled = 0;
+
+/* Calcula y actualiza MR1 para la frecuencia solicitada */
+uint32_t set_mat_frec(uint32_t frecuencia) {
+	if (frecuencia == 0U) {
+		return 4999;
+	}
+	uint32_t pres = (uint32_t) PR_TICK_1 + 1;
+	uint32_t denom = (uint32_t) frecuencia * pres;
+	uint32_t match = 0;
+	if (denom != 0) {
+		match = (uint32_t) (((uint32_t) PCLK + (denom / 2)) / denom - 1);
+	}
+
+	return match;
+}
 
 /* ------------------ Helper / wave generators ------------------ */
 void generate_sin_0_to_90_16_samples(uint32_t out[]) {
@@ -203,10 +219,12 @@ void generar_Func(int option) {
 	DAC_ConverterConfigStruct.DMA_ENA = SET;
 	DAC_Init(LPC_DAC);
 
-	tmp = (PCLK_DAC_IN_MHZ * 1000000U)
-			/ (SIGNAL_FREQ_IN_HZ
-					* ((option == DAC_GENERATE_SINE) ?
-							NUM_SAMPLE_SINE : NUM_SAMPLE));
+	tmp =
+			(PCLK_DAC_IN_MHZ * 1000000U)
+					/ (SIGNAL_FREQ_IN_HZ
+							* ((option == DAC_GENERATE_SINE) ?
+							NUM_SAMPLE_SINE :
+																NUM_SAMPLE));
 	DAC_SetDMATimeOut(LPC_DAC, tmp);
 	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
 
@@ -280,6 +298,31 @@ void configEINT2(void) {
 
 /* Configura ADC + Timer para empezar a muestrear y pasar al DAC en el IRQ del timer */
 void config_ADC_TIMER(void) {
+
+	PINSEL_CFG_Type pinCfg;
+
+	// TXD2 (P0.10) y RXD2 (P0.11)
+	pinCfg.Portnum = 0;
+	pinCfg.Pinnum = 10;
+	pinCfg.Funcnum = 1;
+	pinCfg.Pinmode = PINSEL_PINMODE_PULLUP;
+	pinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+	PINSEL_ConfigPin(&pinCfg);
+
+	pinCfg.Pinnum = 11;
+	PINSEL_ConfigPin(&pinCfg);
+
+	UART_CFG_Type uart_cfg;
+	UART_ConfigStructInit(&uart_cfg);
+	uart_cfg.Baud_rate = 9600;
+	UART_Init(LPC_UART2, &uart_cfg);
+
+	UART_FIFO_CFG_Type uart_fifo;
+	UART_FIFOConfigStructInit(&uart_fifo);
+	UART_FIFOConfig(LPC_UART2, &uart_fifo);
+	UART_TxCmd(LPC_UART2, ENABLE);
+	NVIC_DisableIRQ(UART2_IRQn);
+
 	PINSEL_CFG_Type pin;
 
 	// Asegurar DAC pin P0.26 configurado como AOUT
@@ -322,9 +365,8 @@ void config_ADC_TIMER(void) {
 	config_timer.ResetOnMatch = ENABLE;
 	config_timer.StopOnMatch = DISABLE;
 	config_timer.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-	// Elige un MatchValue apropiado para la frecuencia deseada:
-	// usa set_mat_frec(frec) después de llamar a esta función para ajustar
-	config_timer.MatchValue = 499; // valor inicial (ajustable)
+	uint32_t match = set_mat_frec(frec);
+	config_timer.MatchValue = match; // valor inicial (ajustable)
 	TIM_ConfigMatch(LPC_TIM0, &config_timer);
 
 	TIM_Cmd(LPC_TIM0, ENABLE);
@@ -387,18 +429,34 @@ void SysTick_Handler(void) {
 void TIMER0_IRQHandler(void) {
 	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET) {
 		if (adc_timer_mode_enabled) {
-			// Inicio de conversión bloqueante corto: es aceptable si ADC es rápido.
+			/* Inicio de conversión */
 			ADC_StartCmd(LPC_ADC, ADC_START_NOW);
 
 			while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
 				; // esperar fin de conversión
 
-			uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12 bits
-			uint32_t dac_val = (uint32_t) (raw >> 2) & 0x3FFU; // map 12->10 bits
-			DAC_UpdateValue(LPC_DAC, dac_val);
+			uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12 bits (0..4095)
+
+			/* Enviar los 12 bits en 2 bytes (little-endian): LSB primero, luego MSB.
+			 Python hace struct.unpack('<H', lectura) y espera este formato. */
+
+			uint8_t lo = (uint8_t) (raw & 0xFFU);
+			uint8_t hi = (uint8_t) ((raw >> 8) & 0x0FU); // solo los 4 bits superiores tienen datos, pero enviamos todo el byte.
+
+			/* Enviar primer byte */
+			UART_SendByte(LPC_UART2, lo);
+			/* Esperar que THR esté vacío antes de enviar el siguiente byte (asegura orden y evita sobreescritura) */
+			while (!(LPC_UART2->LSR & 0x20)) { /* 0x20 = UART_LSR_THRE */
+			}
+
+			/* Enviar segundo byte */
+			UART_SendByte(LPC_UART2, hi);
+			/* Opcional: esperar a que se vacíe si lo necesitas */
+			while (!(LPC_UART2->LSR & 0x20)) {
+			}
 		}
 
-		// Limpiar la bandera correcta MR1
+		/* Limpiar la bandera MR1 */
 		TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
 	}
 }
@@ -415,19 +473,6 @@ void EINT3_IRQHandler(void) {
 }
 
 /* ------------------ resto del sistema (set_mat_frec, main) ------------------ */
-
-/* Calcula y actualiza MR1 para la frecuencia solicitada */
-void set_mat_frec(uint32_t frecuencia) {
-	if (frecuencia == 0U)
-		return;
-	uint32_t pres = (uint32_t) PR_TICK_1 + 1;
-	uint32_t denom = (uint32_t) frecuencia * pres;
-	uint32_t match = 0;
-	if (denom != 0) {
-		match = (uint32_t) (((uint32_t) PCLK + (denom / 2)) / denom - 1);
-	}
-	TIM_UpdateMatchValue(LPC_TIM0, 1, match);
-}
 
 int main(void) {
 	SystemInit();

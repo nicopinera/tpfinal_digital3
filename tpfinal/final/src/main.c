@@ -22,7 +22,6 @@ volatile uint32_t systick_ms = 0;
 volatile uint32_t debounce_event_time = 0;
 volatile uint8_t debounce_pending = 0;
 
-
 /* ------------------ Helper / wave generators ------------------ */
 void generate_sin_0_to_90_16_samples(uint32_t out[]) {
 	const double scale = 10000.0;
@@ -151,10 +150,12 @@ void generar_Func(int option) {
 	DAC_ConverterConfigStruct.DMA_ENA = SET;
 	DAC_Init(LPC_DAC);
 
-	tmp = (PCLK_DAC_IN_MHZ * 1000000U)
-			/ (SIGNAL_FREQ_IN_HZ
-					* ((option == DAC_GENERATE_SINE) ?
-							NUM_SAMPLE_SINE : NUM_SAMPLE));
+	tmp =
+			(PCLK_DAC_IN_MHZ * 1000000U)
+					/ (SIGNAL_FREQ_IN_HZ
+							* ((option == DAC_GENERATE_SINE) ?
+							NUM_SAMPLE_SINE :
+																NUM_SAMPLE));
 	DAC_SetDMATimeOut(LPC_DAC, tmp);
 	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
 
@@ -174,14 +175,6 @@ void configPIN(void) {
 	PINSEL_ConfigPin(&pin);
 	GPIO_SetDir(0, 1 << 22, 1);
 	GPIO_ClearValue(0, 1 << 22);
-
-	// ADC pin P0.24 (AD channel 1)
-	pin.Portnum = 0;
-	pin.Pinnum = 24;
-	pin.Funcnum = 1;
-	pin.OpenDrain = 0;
-	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
-	PINSEL_ConfigPin(&pin);
 }
 
 /* Configuración de interrupciones por puerto 2 (pines de dipswitch) */
@@ -217,20 +210,44 @@ void configPIN_INT(void) {
 
 /* ------------------ ADC / TIMER ------------------ */
 
-void configEINT2(void){
+void configEINT2(void) {
 	EXTI_Init();
 	EXTI_SetMode(EXTI_EINT2, EXTI_MODE_LEVEL_SENSITIVE);
 	NVIC_EnableIRQ(EINT2_IRQn);
 
 }
 
-void configADC(void) {
+void config_ADC_TIMER(void) {
+	PINSEL_CFG_Type pin;
+
+	// Init pin DAC P0.26
+	pin.Funcnum = 2;
+	pin.OpenDrain = 0;
+	pin.Pinmode = 0;
+	pin.Pinnum = 26;
+	pin.Portnum = 0;
+	PINSEL_ConfigPin(&pin);
+
+	DAC_CONVERTER_CFG_Type DAC_ConverterConfigStruct;
+	DAC_ConverterConfigStruct.CNT_ENA = 0;
+	DAC_ConverterConfigStruct.DMA_ENA = 0;
+
+	DAC_Init(LPC_DAC);
+	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
+
+
+	// ADC pin P0.24 (AD channel 1)
+	pin.Portnum = 0;
+	pin.Pinnum = 24;
+	pin.Funcnum = 1;
+	pin.OpenDrain = 0;
+	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
+	PINSEL_ConfigPin(&pin);
+
 	ADC_Init(LPC_ADC, 200000); // 200 kHz ADC clock
 	ADC_BurstCmd(LPC_ADC, DISABLE);
 	ADC_ChannelCmd(LPC_ADC, 1, ENABLE);
-}
 
-void configTIMER(void) {
 	TIM_TIMERCFG_Type config_pre;
 	config_pre.PrescaleOption = TIM_PRESCALE_TICKVAL;
 	config_pre.PrescaleValue = PR_TICK_1;
@@ -242,7 +259,7 @@ void configTIMER(void) {
 	config_timer.ResetOnMatch = ENABLE;
 	config_timer.StopOnMatch = DISABLE;
 	config_timer.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-	config_timer.MatchValue = 4999;
+	config_timer.MatchValue = 49999;
 	TIM_ConfigMatch(LPC_TIM0, &config_timer);
 	TIM_Cmd(LPC_TIM0, ENABLE);
 	NVIC_EnableIRQ(TIMER0_IRQn);
@@ -265,25 +282,25 @@ void set_mat_frec(uint32_t frecuencia) {
 /* ------------------ ISRs ------------------ */
 
 void EINT2_IRQHandler(void) {
-    static uint32_t estado_anterior = 1;  // suponemos pull-up → comienza en alto (1)
-    uint32_t estado_actual;
+	static uint32_t estado_anterior = 1; // suponemos pull-up → comienza en alto (1)
+	uint32_t estado_actual;
 
-    // Leer el pin asociado al EINT2, por ejemplo P2.12
-    estado_actual = (GPIO_ReadValue(2) >> 12) & 0x1;
+	// Leer el pin asociado al EINT2, por ejemplo P2.12
+	estado_actual = (GPIO_ReadValue(2) >> 12) & 0x1;
 
-    if (estado_actual != estado_anterior) {
-        if (estado_actual){
-        	// CAMBIAR OPC A NONE
-            // CONFIGURACION ADC - TIMER
-        }
-        else{
-            // APAGAR ADC Y TIMER
-        }
-        estado_anterior = estado_actual;
-    }
+	if (estado_actual != estado_anterior) {
+		if (estado_actual) {
+			opc = DAC_GENERATE_NONE; // CAMBIAR OPC A NONE
+			config_adc_timer(); // CONFIGURACION ADC - TIMER
+		} else {
+			TIM_DeInit(LPC_TIM0);
+			ADC_ChannelCmd(LPC_ADC, 1, DISABLE); // APAGAR ADC Y TIMER
+		}
+		estado_anterior = estado_actual;
+	}
 
-    // Limpiar bandera de interrupción externa
-    LPC_SC->EXTINT = (1 << 2);
+	// Limpiar bandera de interrupción externa
+	LPC_SC->EXTINT = (1 << 2);
 }
 
 /* SysTick: contador ms para debounce */
@@ -295,11 +312,12 @@ void SysTick_Handler(void) {
  Nota: si usas DMA para DAC, NO habilites configADC/configTIMER simultáneamente. */
 void TIMER0_IRQHandler(void) {
 	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET) {
-        ADC_StartCmd(LPC_ADC, ADC_START_NOW);
-        while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)));
-        uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1);
-        uint32_t dac_val = (uint32_t)(raw >> 2) & 0x3FFU;
-        DAC_UpdateValue(LPC_DAC, dac_val);
+		ADC_StartCmd(LPC_ADC, ADC_START_NOW);
+		while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
+			;
+		uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1);
+		uint32_t dac_val = (uint32_t) (raw >> 2) & 0x3FFU;
+		DAC_UpdateValue(LPC_DAC, dac_val);
 		// Limpiar la bandera correcta MR1 (antes estaba MR0 en tu código)
 		TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
 	}
@@ -337,7 +355,7 @@ int main(void) {
 		if (debounce_pending) {
 			if ((systick_ms - debounce_event_time) >= DEBOUNCE_MS) {
 				uint32_t mask = 0x7u;
-				uint32_t valor_p = (~GPIO_ReadValue(2)) & mask;				// Interpretar valor_p como código 0..7
+				uint32_t valor_p = (~GPIO_ReadValue(2)) & mask;	// Interpretar valor_p como código 0..7
 				switch (valor_p) {
 				case 0:
 					opc = DAC_GENERATE_NONE;

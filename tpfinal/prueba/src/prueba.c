@@ -45,7 +45,7 @@
 #define M_PI 3.14159f
 
 #define MUESTRAS_SIN 18
-#define ESCALONES 10
+#define ESCALONES 5
 
 /* Debounce */
 #define DEBOUNCE_MS 20

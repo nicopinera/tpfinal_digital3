@@ -1,151 +1,95 @@
 import serial
-import time
-import numpy as np
-from collections import deque
+import threading
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from collections import deque
 
-# Configuración
-BAUD_RATE = 9600
-SAMPLE_INTERVAL = 0.5  # segundos entre impresiones
-PLOT_ENABLED = True    # Cambiar a False si solo quieres consola
+# ================================================================
+# Parámetros generales
+# ================================================================
+PORT = '/dev/ttyUSB0'      # Cambiá según tu puerto (ej: COM3 en Windows)
+BAUDRATE = 115200
+BUFFER_SIZE = 500          # Cantidad de muestras en el gráfico
+ADC_BITS = 12              # Resolución del ADC (12 bits -> 0–4095)
 
-# Configurar comunicación serial
-try:
-    ser = serial.Serial('/dev/ttyUSB0', BAUD_RATE, timeout=1)
-    print(f"📡 Conectado a {ser.port} a {BAUD_RATE} baudios")
-    print(f"⏱️  Mostrando datos cada {SAMPLE_INTERVAL} segundos")
-    print("=" * 60)
-except Exception as e:
-    print(f"❌ Error al conectar: {e}")
-    exit()
+# ================================================================
+# Hilo lector del puerto serie
+# ================================================================
+def reader_thread(ser, buffer, stop_event):
+    while not stop_event.is_set():
+        try:
+            # Leer 2 bytes del ADC (little endian)
+            data = ser.read(2)
+        except (serial.SerialException, OSError):
+            stop_event.set()
+            break
 
-# Variables para estadísticas
-last_print_time = time.time()
-data_buffer = []
-sample_count = 0
-total_samples = 0
-freq_estimate = 0
+        # Si no llegaron los 2 bytes, esperar siguiente lectura
+        if len(data) != 2:
+            continue
 
-# Configurar gráfica si está habilitada
-if PLOT_ENABLED:
-    plt.ion()
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-    time_plot = ax1.plot([], [], 'b-', linewidth=1, alpha=0.8)[0]
-    hist_plot = ax2.hist([], bins=50, range=(0, 255), alpha=0.7, color='green')
-    ax1.set_title('Señal ADC en Tiempo Real (1 Hz esperada)')
-    ax1.set_ylabel('Valor ADC (0-255)')
-    ax1.grid(True, alpha=0.3)
-    ax2.set_title('Histograma de Valores')
-    ax2.set_xlabel('Valor ADC')
-    ax2.set_ylabel('Frecuencia')
-    ax2.grid(True, alpha=0.3)
-    plt.tight_layout()
+        # Combinar bytes (low byte primero, high byte después)
+        value_raw = int.from_bytes(data, byteorder="little", signed=False) & 0x0FFF
 
-def calculate_frequency(timestamps):
-    """Calcula frecuencia estimada basada en timestamps"""
-    if len(timestamps) < 2:
-        return 0
-    intervals = np.diff(timestamps)
-    return 1.0 / np.mean(intervals) if np.mean(intervals) > 0 else 0
+        # Guardar valor en el buffer (cola circular)
+        buffer.append(value_raw)
 
-def print_formatted_data(data, interval_samples, freq):
-    """Imprime datos formateados de manera legible"""
-    if not data:
-        print(f"⏳ {time.strftime('%H:%M:%S')} - Sin datos en este intervalo")
-        return
-    
-    # Estadísticas básicas
-    data_array = np.array(data)
-    mean_val = np.mean(data_array)
-    std_val = np.std(data_array)
-    min_val = np.min(data_array)
-    max_val = np.max(data_array)
-    
-    print(f"\n📊 {time.strftime('%H:%M:%S')} - Intervalo: {SAMPLE_INTERVAL}s")
-    print(f"   Muestras: {interval_samples} | Frecuencia estimada: {freq:.2f} Hz")
-    print(f"   Estadísticas: Media={mean_val:.1f}, Std={std_val:.1f}, Min={min_val}, Max={max_val}")
-    
-    # Mostrar primeros 10 valores como ejemplo
-    preview = data[:10]
-    print(f"   Preview: {' '.join(f'{x:3d}' for x in preview)}" + (" ..." if len(data) > 10 else ""))
-    
-    # Detectar si hay una señal periódica
-    if std_val > 10:  # Umbral arbitrario para detectar variación
-        print("   📈 Señal: Variación detectada (posible señal periódica)")
-    else:
-        print("   📉 Señal: Poca variación (posible DC o ruido)")
+# ================================================================
+# Actualización de la animación
+# ================================================================
+def update_plot(frame, line, buffer):
+    if not buffer:
+        return line,
 
-def update_plot(data):
-    """Actualiza la gráfica en tiempo real"""
-    if not PLOT_ENABLED or not data:
-        return
-        
-    # Actualizar plot de tiempo
-    time_plot.set_data(range(len(data)), data)
-    ax1.relim()
-    ax1.autoscale_view()
-    
-    # Actualizar histograma
-    ax2.clear()
-    ax2.hist(data, bins=50, range=(0, 255), alpha=0.7, color='green', edgecolor='black')
-    ax2.set_title('Histograma de Valores')
-    ax2.set_xlabel('Valor ADC')
-    ax2.set_ylabel('Frecuencia')
-    ax2.grid(True, alpha=0.3)
-    
-    fig.canvas.draw()
-    fig.canvas.flush_events()
+    # Eje X = índices (últimos N puntos)
+    x = list(range(len(buffer)))
+    y = list(buffer)
 
-# Bucle principal
-try:
-    timestamps = []
-    
-    while True:
-        # Leer datos disponibles
-        if ser.in_waiting > 0:
-            try:
-                # Leer línea completa
-                line = ser.readline().decode('utf-8', errors='ignore').strip()
-                if line:
-                    # Convertir a entero
-                    value = int(line)
-                    data_buffer.append(value)
-                    sample_count += 1
-                    total_samples += 1
-                    timestamps.append(time.time())
-                    
-                    # Mantener solo últimos timestamps para cálculo de frecuencia
-                    if len(timestamps) > 100:
-                        timestamps.pop(0)
-                        
-            except (ValueError, UnicodeDecodeError) as e:
-                # Ignorar errores de conversión
-                pass
-        
-        # Mostrar datos cada intervalo
-        current_time = time.time()
-        if current_time - last_print_time >= SAMPLE_INTERVAL:
-            if data_buffer:
-                # Calcular frecuencia estimada
-                freq_estimate = calculate_frequency(timestamps[-min(50, len(timestamps)):])
-                
-                # Mostrar datos formateados
-                print_formatted_data(data_buffer, sample_count, freq_estimate)
-                
-                # Actualizar gráfica
-                update_plot(data_buffer)
-                
-                # Reiniciar contadores
-                data_buffer = []
-                sample_count = 0
-            
-            last_print_time = current_time
-        
-        time.sleep(0.001)
-        
-except KeyboardInterrupt:
-    print(f"\n\n🛑 Adquisición detenida")
-    print(f"📈 Total de muestras recibidas: {total_samples}")
-finally:
-    ser.close()
-    print("🔌 Conexión cerrada")
+    line.set_data(x, y)
+    return line,
+
+# ================================================================
+# Programa principal
+# ================================================================
+def main():
+    # Abrir puerto serie
+    ser = serial.Serial(PORT, BAUDRATE, timeout=1)
+
+    # Buffer circular para las muestras
+    buffer = deque(maxlen=BUFFER_SIZE)
+
+    # Evento para detener el hilo limpiamente
+    stop_event = threading.Event()
+
+    # Iniciar hilo de lectura
+    thread = threading.Thread(target=reader_thread, args=(ser, buffer, stop_event))
+    thread.start()
+
+    # Configurar gráfico
+    plt.style.use('seaborn-v0_8-darkgrid')
+    fig, ax = plt.subplots()
+    ax.set_title("Lectura en tiempo real del ADC")
+    ax.set_xlabel("Muestra")
+    ax.set_ylabel("Valor ADC (0–4095)")
+    ax.set_ylim(0, 4095)
+    ax.set_xlim(0, BUFFER_SIZE)
+    line, = ax.plot([], [], marker="o", linestyle="None", markersize=3, color="tab:blue")
+
+    # Animación en tiempo real
+    ani = animation.FuncAnimation(fig, update_plot, fargs=(line, buffer),
+                                  interval=50, blit=True)
+
+    try:
+        plt.show()
+    finally:
+        # Detener hilo al cerrar ventana
+        stop_event.set()
+        thread.join()
+        ser.close()
+        print("Conexión cerrada correctamente.")
+
+# ================================================================
+# Entrada del programa
+# ================================================================
+if __name__ == "__main__":
+    main()

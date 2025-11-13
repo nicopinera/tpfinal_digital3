@@ -427,38 +427,29 @@ void SysTick_Handler(void) {
 
 /* Timer0 IRQ: usado para disparar conversiones ADC y pasar el valor al DAC (modo ADC+TIMER) */
 void TIMER0_IRQHandler(void) {
-	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET) {
-		if (adc_timer_mode_enabled) {
-			/* Inicio de conversión */
-			ADC_StartCmd(LPC_ADC, ADC_START_NOW);
+    if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET) {
+        if (adc_timer_mode_enabled) {
+            /* Inicio de conversión */
+            ADC_StartCmd(LPC_ADC, ADC_START_NOW);
 
-			while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
-				; // esperar fin de conversión
+            while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
+                ; // esperar fin de conversión
 
-			uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12 bits (0..4095)
+            uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12 bits (0..4095)
+            uint8_t valor = (uint16_t)(raw >> 4) & 0xFFU;
 
-			/* Enviar los 12 bits en 2 bytes (little-endian): LSB primero, luego MSB.
-			 Python hace struct.unpack('<H', lectura) y espera este formato. */
+            /* Enviar con formato: valor + salto de línea */
+            UART_SendByte(LPC_UART2, valor);
+            UART_SendByte(LPC_UART2, '\n');  // Agregar salto de línea
 
-			uint8_t lo = (uint8_t) (raw & 0xFFU);
-			uint8_t hi = (uint8_t) ((raw >> 8) & 0x0FU); // solo los 4 bits superiores tienen datos, pero enviamos todo el byte.
+            /* Esperar que THR esté vacío */
+            while (!(LPC_UART2->LSR & 0x20)) {
+            }
+        }
+    }
 
-			/* Enviar primer byte */
-			UART_SendByte(LPC_UART2, lo);
-			/* Esperar que THR esté vacío antes de enviar el siguiente byte (asegura orden y evita sobreescritura) */
-			while (!(LPC_UART2->LSR & 0x20)) { /* 0x20 = UART_LSR_THRE */
-			}
-
-			/* Enviar segundo byte */
-			UART_SendByte(LPC_UART2, hi);
-			/* Opcional: esperar a que se vacíe si lo necesitas */
-			while (!(LPC_UART2->LSR & 0x20)) {
-			}
-		}
-
-		/* Limpiar la bandera MR1 */
-		TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
-	}
+    /* Limpiar la bandera MR1 */
+    TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
 }
 
 /* EINT3 IRQ: puerto 2 IRQ. Debounce diferido para dip switches */

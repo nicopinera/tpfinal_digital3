@@ -32,7 +32,7 @@ ax.grid(True, alpha=0.3)
 
 # Variables para control de velocidad
 last_print_time = 0
-print_interval = 0.5  # Mostrar en consola cada 0.5 segundos
+print_interval = 1  # Mostrar en consola cada 0.5 segundos
 sample_count = 0
 
 def read_and_process_data():

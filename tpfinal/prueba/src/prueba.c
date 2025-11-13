@@ -1,16 +1,3 @@
-/*
- waveform_generator_eint2_adc_timer.c
- Versión corregida e integrada:
- - EINT3 (P2.0..P2.2) para seleccionar forma de onda (ya con debounce diferido).
- - EINT2 (P2.12) para habilitar/deshabilitar modo ADC+TIMER -> DAC.
- - Correcciones: llamada correcta a config_ADC_TIMER(), no mezcla DMA/ADC,
- GPDMACfg.TransferWidth coherente (word), limpieza de flags correcta,
- deshabilita canal DMA cuando se entra en modo ADC/TIMER.
- - Nota: verifica en el datasheet de tu LPC17xx la función PINSEL correcta
- para EINT2 (el ejemplo usa Funcnum = 1 para P2.12, que suele ser el caso,
- pero confirma según tu silicio).
- */
-
 #include "LPC17xx.h"
 #include "lpc17xx_pinsel.h"
 #include "lpc17xx_gpio.h"
@@ -24,28 +11,29 @@
 #include <stdint.h>
 
 /* ------------------ Config / constantes ------------------ */
-#define PR_TICK_1 4            // Prescale value (PR = 4 -> factor real = PR+1 = 5)
-#define PCLK 25000000
-#define PCLK_DAC_IN_MHZ    25  // CCLK / 4
+#define PR_TICK_1 4		   // Prescale value
+#define PCLK 25000000	   // Clock de perifericos
+#define PCLK_DAC_IN_MHZ 25 // CCLK / 4
 
-#define DMA_SIZE_SINE      60
-#define NUM_SAMPLE_SINE    60
-#define DMA_SIZE           64
-#define NUM_SAMPLE         64
+#define DMA_SIZE_SINE 60   // Tamaño DMA para SENO
+#define NUM_SAMPLE_SINE 60 // Numero de Muestras para SENO
 
-#define SIGNAL_FREQ_IN_HZ  60
+#define DMA_SIZE 64	  // Tamaño DMA para resto de señales
+#define NUM_SAMPLE 64 // Numero de Muestras para el resto de señales
 
-#define DAC_GENERATE_SINE      1
-#define DAC_GENERATE_TRIANGLE  2
-#define DAC_GENERATE_ESCALATOR 3
-#define DAC_GENERATE_ESCALON   4
-#define DAC_GENERATE_NONE      0
+#define SIGNAL_FREQ_IN_HZ 60 // Frecuencia de las señales
 
-#define MAX_MUESTRAS 18
-#define M_PI 3.14159f
+#define DAC_GENERATE_SINE 1		 // Generar SENO
+#define DAC_GENERATE_TRIANGLE 2	 // Generar TRIANGULAR
+#define DAC_GENERATE_ESCALATOR 3 // Generar ESCALADOR
+#define DAC_GENERATE_ESCALON 4	 // Generar ESCALON
+#define DAC_GENERATE_NONE 0		 // Nada
+
+#define MAX_MUESTRAS 18 // Maximas muestras del seno
+#define M_PI 3.14159f	// PI
 
 #define MUESTRAS_SIN 18
-#define ESCALONES 5
+#define ESCALONES 5 // Escalones o divisiones del escalador
 
 /* Debounce */
 #define DEBOUNCE_MS 20
@@ -54,8 +42,8 @@
 volatile int frec = 4000;
 volatile int opc = DAC_GENERATE_NONE; // valor elegido por el DIP (volatile por acceso desde ISR)
 
-static GPDMA_LLI_Type dma_lli;             // LLI persistente (no en pila)
-static uint32_t dac_lut[NUM_SAMPLE];       // tabla de salida DAC persistente
+static GPDMA_LLI_Type dma_lli;		 // LLI persistente (no en pila)
+static uint32_t dac_lut[NUM_SAMPLE]; // tabla de salida DAC persistente
 
 /* Debounce / SysTick variables */
 volatile uint32_t systick_ms = 0;
@@ -66,41 +54,50 @@ volatile uint8_t debounce_pending = 0;
 volatile uint8_t adc_timer_mode_enabled = 0;
 
 /* Calcula y actualiza MR1 para la frecuencia solicitada */
-uint32_t set_mat_frec(uint32_t frecuencia) {
-	if (frecuencia == 0U) {
+uint32_t set_mat_frec(uint32_t frecuencia)
+{
+	if (frecuencia == 0U)
+	{
 		return 4999;
 	}
-	uint32_t pres = (uint32_t) PR_TICK_1 + 1;
-	uint32_t denom = (uint32_t) frecuencia * pres;
+	uint32_t pres = (uint32_t)PR_TICK_1 + 1;
+	uint32_t denom = (uint32_t)frecuencia * pres;
 	uint32_t match = 0;
-	if (denom != 0) {
-		match = (uint32_t) (((uint32_t) PCLK + (denom / 2)) / denom - 1);
+	if (denom != 0)
+	{
+		match = (uint32_t)(((uint32_t)PCLK + (denom / 2)) / denom - 1);
 	}
 
 	return match;
 }
 
 /* ------------------ Helper / wave generators ------------------ */
-void generate_sin_0_to_90_16_samples(uint32_t out[]) {
+void generate_sin_0_to_90_16_samples(uint32_t out[])
+{
 	const double scale = 10000.0;
 	const int steps = MUESTRAS_SIN - 1;
-	for (int i = 0; i < MUESTRAS_SIN; ++i) {
+	for (int i = 0; i < MUESTRAS_SIN; ++i)
+	{
 		double angle_deg = (90.0 * i) / steps;
 		double rad = angle_deg * M_PI / 180.0;
 		double v = sin(rad) * scale;
-		out[i] = (uint32_t) v;
+		out[i] = (uint32_t)v;
 	}
 }
 
-void generar_triangulo(uint32_t out[]) {
+void generar_triangulo(uint32_t out[])
+{
 	int half = NUM_SAMPLE / 2;
-	for (int i = 0; i < NUM_SAMPLE; i++) {
+	for (int i = 0; i < NUM_SAMPLE; i++)
+	{
 		uint32_t v;
-		if (i <= half) {
-			v = (uint32_t) (((uint32_t) i * 1023U) / (uint32_t) half);
-		} else {
-			v = (uint32_t) (((uint32_t) (NUM_SAMPLE - i) * 1023U)
-					/ (uint32_t) half);
+		if (i <= half)
+		{
+			v = (uint32_t)(((uint32_t)i * 1023U) / (uint32_t)half);
+		}
+		else
+		{
+			v = (uint32_t)(((uint32_t)(NUM_SAMPLE - i) * 1023U) / (uint32_t)half);
 		}
 		if (v > 1023U)
 			v = 1023U;
@@ -108,23 +105,28 @@ void generar_triangulo(uint32_t out[]) {
 	}
 }
 
-void generar_escalonado(uint32_t out[]) {
-	for (int i = 0; i < NUM_SAMPLE; i++) {
+void generar_escalonado(uint32_t out[])
+{
+	for (int i = 0; i < NUM_SAMPLE; i++)
+	{
 		uint32_t step = (1023U / ESCALONES);
 		uint32_t bucket = (i / (NUM_SAMPLE / ESCALONES));
 		out[i] = (step * bucket) << 6;
 	}
 }
 
-void generar_escalon(uint32_t out[]) {
-	for (int i = 0; i < NUM_SAMPLE; i++) {
+void generar_escalon(uint32_t out[])
+{
+	for (int i = 0; i < NUM_SAMPLE; i++)
+	{
 		uint32_t v = (i <= (NUM_SAMPLE / 2)) ? 1023U : 0U;
 		out[i] = (v << 6);
 	}
 }
 
 /* ------------------ configurar y lanzar el DMA/DAC ------------------ */
-void generar_Func(int option) {
+void generar_Func(int option)
+{
 	PINSEL_CFG_Type PinCfg;
 	DAC_CONVERTER_CFG_Type DAC_ConverterConfigStruct;
 	GPDMA_Channel_CFG_Type GPDMACfg;
@@ -132,7 +134,8 @@ void generar_Func(int option) {
 	uint32_t sin_0_to_90_16_samples[MAX_MUESTRAS];
 
 	// Si estamos en modo ADC+TIMER, no habilitamos DMA (evitar conflicto)
-	if (adc_timer_mode_enabled) {
+	if (adc_timer_mode_enabled)
+	{
 		// Si se pide generar función mientras ADC+TIMER está activo, simplemente salimos.
 		return;
 	}
@@ -149,18 +152,27 @@ void generar_Func(int option) {
 	generate_sin_0_to_90_16_samples(sin_0_to_90_16_samples);
 
 	// Rellenar la tabla según la opción
-	switch (option) {
+	switch (option)
+	{
 	case DAC_GENERATE_SINE:
-		for (int i = 0; i < NUM_SAMPLE_SINE; i++) {
-			if (i <= (NUM_SAMPLE_SINE / 4)) {
+		for (int i = 0; i < NUM_SAMPLE_SINE; i++)
+		{
+			if (i <= (NUM_SAMPLE_SINE / 4))
+			{
 				dac_lut[i] = 512 + 512 * sin_0_to_90_16_samples[i] / 10000;
 				if (i == (NUM_SAMPLE_SINE / 4))
 					dac_lut[i] = 1023;
-			} else if (i <= (NUM_SAMPLE_SINE / 2)) {
+			}
+			else if (i <= (NUM_SAMPLE_SINE / 2))
+			{
 				dac_lut[i] = 512 + 512 * sin_0_to_90_16_samples[30 - i] / 10000;
-			} else if (i <= (NUM_SAMPLE_SINE * 3 / 4)) {
+			}
+			else if (i <= (NUM_SAMPLE_SINE * 3 / 4))
+			{
 				dac_lut[i] = 512 - 512 * sin_0_to_90_16_samples[i - 30] / 10000;
-			} else {
+			}
+			else
+			{
 				dac_lut[i] = 512 - 512 * sin_0_to_90_16_samples[60 - i] / 10000;
 			}
 			dac_lut[i] = (dac_lut[i] << 6);
@@ -189,13 +201,13 @@ void generar_Func(int option) {
 	}
 
 	// Preparar LLI (usa la variable estática dma_lli)
-	dma_lli.SrcAddr = (uint32_t) dac_lut;
-	dma_lli.DstAddr = (uint32_t) &(LPC_DAC->DACR);
-	dma_lli.NextLLI = (uint32_t) &dma_lli; // bucle infinito
+	dma_lli.SrcAddr = (uint32_t)dac_lut;
+	dma_lli.DstAddr = (uint32_t)&(LPC_DAC->DACR);
+	dma_lli.NextLLI = (uint32_t)&dma_lli; // bucle infinito
 
 	// Transfer size (coherente con el número de elementos a transferir)
 	uint32_t transSize =
-			(option == DAC_GENERATE_SINE) ? DMA_SIZE_SINE : DMA_SIZE;
+		(option == DAC_GENERATE_SINE) ? DMA_SIZE_SINE : DMA_SIZE;
 
 	// Control: usa transSize (si tu driver espera transSize-1, ajusta)
 	dma_lli.Control = (transSize) | (2 << 18) | (2 << 21) | (1 << 26);
@@ -204,14 +216,14 @@ void generar_Func(int option) {
 	GPDMA_Init();
 
 	GPDMACfg.ChannelNum = 0;
-	GPDMACfg.SrcMemAddr = (uint32_t) dac_lut;
+	GPDMACfg.SrcMemAddr = (uint32_t)dac_lut;
 	GPDMACfg.DstMemAddr = 0;
 	GPDMACfg.TransferSize = transSize;
 	GPDMACfg.TransferWidth = 2; // WORD (coincide con (2<<18) en Control)
 	GPDMACfg.TransferType = GPDMA_TRANSFERTYPE_M2P;
 	GPDMACfg.SrcConn = 0;
 	GPDMACfg.DstConn = GPDMA_CONN_DAC;
-	GPDMACfg.DMALLI = (uint32_t) &dma_lli;
+	GPDMACfg.DMALLI = (uint32_t)&dma_lli;
 	GPDMA_Setup(&GPDMACfg);
 
 	// Configurar DAC sin DMA por defecto
@@ -220,11 +232,7 @@ void generar_Func(int option) {
 	DAC_Init(LPC_DAC);
 
 	tmp =
-			(PCLK_DAC_IN_MHZ * 1000000U)
-					/ (SIGNAL_FREQ_IN_HZ
-							* ((option == DAC_GENERATE_SINE) ?
-							NUM_SAMPLE_SINE :
-																NUM_SAMPLE));
+		(PCLK_DAC_IN_MHZ * 1000000U) / (SIGNAL_FREQ_IN_HZ * ((option == DAC_GENERATE_SINE) ? NUM_SAMPLE_SINE : NUM_SAMPLE));
 	DAC_SetDMATimeOut(LPC_DAC, tmp);
 	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
 
@@ -233,7 +241,8 @@ void generar_Func(int option) {
 }
 
 /* ------------------ Configuración pines / interrupciones ------------------ */
-void configPIN(void) {
+void configPIN(void)
+{
 	PINSEL_CFG_Type pin;
 	// LED P0.22 as GPIO output
 	pin.Portnum = 0;
@@ -247,7 +256,8 @@ void configPIN(void) {
 }
 
 /* Configuración de interrupciones por puerto 2 (pines de dipswitch) */
-void configPIN_INT(void) {
+void configPIN_INT(void)
+{
 	PINSEL_CFG_Type PinCfg;
 
 	PinCfg.Funcnum = 0; // GPIO
@@ -281,7 +291,8 @@ void configPIN_INT(void) {
 
 /* Configura P2.12 como EINT2 (asegúrate en tu datasheet el Funcnum correcto).
  Aquí se usa Funcnum = 1 (verifica para tu variante). */
-void configEINT2(void) {
+void configEINT2(void)
+{
 	PINSEL_CFG_Type p;
 	p.Portnum = 2;
 	p.Pinnum = 12;
@@ -297,7 +308,8 @@ void configEINT2(void) {
 }
 
 /* Configura ADC + Timer para empezar a muestrear y pasar al DAC en el IRQ del timer */
-void config_ADC_TIMER(void) {
+void config_ADC_TIMER(void)
+{
 
 	PINSEL_CFG_Type pinCfg;
 
@@ -324,27 +336,10 @@ void config_ADC_TIMER(void) {
 	NVIC_DisableIRQ(UART2_IRQn);
 
 	PINSEL_CFG_Type pin;
-
-	// Asegurar DAC pin P0.26 configurado como AOUT
-	pin.Funcnum = 2;
-	pin.OpenDrain = 0;
-	pin.Pinmode = 0;
-	pin.Pinnum = 26;
-	pin.Portnum = 0;
-	PINSEL_ConfigPin(&pin);
-
-	// Inicializar DAC (modo no DMA, update por software)
-	DAC_CONVERTER_CFG_Type DAC_Config;
-	DAC_Config.CNT_ENA = SET;    // Enable counter (not strictly needed)
-	DAC_Config.DMA_ENA = RESET;  // NO DMA: we'll update from timer ISR
-	DAC_Init(LPC_DAC);
-	DAC_ConfigDAConverterControl(LPC_DAC,
-			(DAC_CONVERTER_CFG_Type*) &DAC_Config);
-
 	// ADC: P0.24 -> AD1.1
 	pin.Portnum = 0;
 	pin.Pinnum = 24;
-	pin.Funcnum = 1; // AD1.1 typical
+	pin.Funcnum = 1;
 	pin.OpenDrain = 0;
 	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
 	PINSEL_ConfigPin(&pin);
@@ -375,7 +370,8 @@ void config_ADC_TIMER(void) {
 }
 
 /* Detener ADC+TIMER de forma segura */
-void stop_ADC_TIMER(void) {
+void stop_ADC_TIMER(void)
+{
 	// Deshabilitar timer y ADC
 	TIM_Cmd(LPC_TIM0, DISABLE);
 	TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
@@ -392,23 +388,28 @@ void stop_ADC_TIMER(void) {
  Se asume pull-up: estado alto = inactivo, bajo = activo (dependiendo wiring).
  Ajusta la lógica si tu interruptor invierte polaridad.
  */
-void EINT2_IRQHandler(void) {
+void EINT2_IRQHandler(void)
+{
 	static uint32_t estado_anterior = 1; // suponemos pull-up -> comienza en alto (1)
 	uint32_t estado_actual;
 
 	// Leer el pin P2.12 (bit 12)
 	estado_actual = (GPIO_ReadValue(2) >> 12) & 0x1;
 
-	if (estado_actual != estado_anterior) {
-		if (estado_actual == 0) {
+	if (estado_actual != estado_anterior)
+	{
+		if (estado_actual == 0)
+		{
 			// ejemplo: switch cerrado (activo) -> habilitar ADC+TIMER
 			adc_timer_mode_enabled = 1;
 			// asegurarse de que DMA esté deshabilitado
 			GPDMA_ChannelCmd(0, DISABLE);
 			config_ADC_TIMER();
 			// setear frecuencia deseada (ejemplo: frec variable global)
-			set_mat_frec((uint32_t) frec);
-		} else {
+			set_mat_frec((uint32_t)frec);
+		}
+		else
+		{
 			// switch abierto -> deshabilitar ADC+TIMER y volver a modo DMA si opc lo pide
 			stop_ADC_TIMER();
 			// opc puede permanecer igual; la parte principal decidirá si vuelve a generar_Func(opc)
@@ -421,39 +422,45 @@ void EINT2_IRQHandler(void) {
 }
 
 /* SysTick: contador ms para debounce */
-void SysTick_Handler(void) {
+void SysTick_Handler(void)
+{
 	systick_ms++;
 }
 
 /* Timer0 IRQ: usado para disparar conversiones ADC y pasar el valor al DAC (modo ADC+TIMER) */
-void TIMER0_IRQHandler(void) {
-    if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET) {
-        if (adc_timer_mode_enabled) {
-            /* Inicio de conversión */
-            ADC_StartCmd(LPC_ADC, ADC_START_NOW);
+void TIMER0_IRQHandler(void)
+{
+	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET)
+	{
+		if (adc_timer_mode_enabled)
+		{
+			/* Inicio de conversión */
+			ADC_StartCmd(LPC_ADC, ADC_START_NOW);
 
-            while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
-                ; // esperar fin de conversión
+			while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
+				; // esperar fin de conversión
 
-            uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12 bits (0..4095)
-            uint8_t valor = (uint16_t)(raw >> 4) & 0xFFU;
+			uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12 bits (0..4095)
+			uint8_t valor = (uint16_t)(raw >> 4) & 0xFFU;
 
-            /* Enviar con formato: valor + salto de línea */
-            UART_SendByte(LPC_UART2, valor);
-            UART_SendByte(LPC_UART2, '\n');  // Agregar salto de línea
+			/* Enviar con formato: valor + salto de línea */
+			UART_SendByte(LPC_UART2, valor);
+			UART_SendByte(LPC_UART2, '\n'); // Agregar salto de línea
 
-            /* Esperar que THR esté vacío */
-            while (!(LPC_UART2->LSR & 0x20)) {
-            }
-        }
-    }
+			/* Esperar que THR esté vacío */
+			while (!(LPC_UART2->LSR & 0x20))
+			{
+			}
+		}
+	}
 
-    /* Limpiar la bandera MR1 */
-    TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
+	/* Limpiar la bandera MR1 */
+	TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
 }
 
 /* EINT3 IRQ: puerto 2 IRQ. Debounce diferido para dip switches */
-void EINT3_IRQHandler(void) {
+void EINT3_IRQHandler(void)
+{
 	const uint32_t mask = (1u << 0) | (1u << 1) | (1u << 2);
 
 	debounce_event_time = systick_ms;
@@ -465,7 +472,8 @@ void EINT3_IRQHandler(void) {
 
 /* ------------------ resto del sistema (set_mat_frec, main) ------------------ */
 
-int main(void) {
+int main(void)
+{
 	SystemInit();
 
 	// Pines y NVIC
@@ -480,14 +488,18 @@ int main(void) {
 
 	int last_opc = -1; // para detectar cambios y reconfigurar solo cuando cambie
 
-	while (1) {
+	while (1)
+	{
 		// Debounce diferido: procesar evento cuando hayan pasado DEBOUNCE_MS
-		if (debounce_pending) {
-			if ((systick_ms - debounce_event_time) >= DEBOUNCE_MS) {
+		if (debounce_pending)
+		{
+			if ((systick_ms - debounce_event_time) >= DEBOUNCE_MS)
+			{
 				uint32_t mask = 0x7u;
 				uint32_t valor_p = (~GPIO_ReadValue(2)) & mask; // leer P2.0..P2.2, invertir si usas pull-up
 				// Mapea (puedes ajustar la lógica de mapeo a tu necesidad)
-				switch (valor_p) {
+				switch (valor_p)
+				{
 				case 0:
 					opc = DAC_GENERATE_NONE;
 					break;
@@ -512,11 +524,15 @@ int main(void) {
 		}
 
 		// Si cambió la opción y no estamos en modo ADC+TIMER, reconfiguramos (DMA)
-		if (!adc_timer_mode_enabled && (opc != last_opc)) {
+		if (!adc_timer_mode_enabled && (opc != last_opc))
+		{
 			last_opc = opc;
-			if (opc == DAC_GENERATE_NONE) {
+			if (opc == DAC_GENERATE_NONE)
+			{
 				GPDMA_ChannelCmd(0, DISABLE);
-			} else {
+			}
+			else
+			{
 				generar_Func(opc);
 			}
 		}

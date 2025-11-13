@@ -11,18 +11,19 @@
 #include "constantes.h"
 
 /* ------------------ Variables globales ------------------ */
-volatile int frec = 2000;
-volatile int opc = DAC_GENERATE_NONE; // valor elegido por el DIP (volatile por acceso desde ISR)
+volatile int frec = 100; // Frecuencia de la señal que sale por UART
+volatile int opc = DAC_GENERATE_NONE; // valor elegido por el DIP por defecto
 
-static GPDMA_LLI_Type dma_lli;             // LLI persistente (no en pila)
-static uint32_t dac_lut[NUM_SAMPLE];       // tabla de salida DAC persistente
+static GPDMA_LLI_Type dma_lli; // LLI para DMA - DAC
+static uint32_t dac_lut[NUM_SAMPLE]; // tabla de salida DAC
 
-/* Debounce / SysTick variables */
+// Debounce y SysTick
 volatile uint32_t systick_ms = 0;
 volatile uint32_t debounce_event_time = 0;
 volatile uint8_t debounce_pending = 0;
 
 /* ------------------ Helper / wave generators ------------------ */
+
 void generate_sin_0_to_90_16_samples(uint32_t out[]) {
 	const double scale = 10000.0;
 	const int steps = MUESTRAS_SIN - 1;

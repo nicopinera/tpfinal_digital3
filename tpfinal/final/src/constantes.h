@@ -1,6 +1,9 @@
 #ifndef CONSTANTES_H_
 #define CONSTANTES_H_
 
+#include <math.h>
+#include <stdint.h>
+
 /* ------------------ Config / constantes ------------------ */
 #define PR_TICK_1 4            // Prescale (PR = 4 -> factor real = PR+1 = 5)
 #define PCLK 25000000			// Valor de la frecuencia de perifericos
@@ -27,5 +30,11 @@
 
 /* Debounce */
 #define DEBOUNCE_MS 20 // Tiempo en MS para el antirebote
+
+void generate_sin_0_to_90_16_samples(uint32_t out[]);
+void generar_triangulo(uint32_t out[]);
+void generar_escalonado(uint32_t out[]);
+void generar_escalon(uint32_t out[]);
+uint32_t set_mat_frec(uint32_t frecuencia);
 
 #endif /* CONSTANTES_H_ */

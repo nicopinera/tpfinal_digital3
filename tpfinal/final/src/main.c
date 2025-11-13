@@ -22,53 +22,7 @@ volatile uint32_t systick_ms = 0;
 volatile uint32_t debounce_event_time = 0;
 volatile uint8_t debounce_pending = 0;
 
-/* ------------------ Helper / wave generators ------------------ */
-
-void generate_sin_0_to_90_16_samples(uint32_t out[]) {
-	const double scale = 10000.0;
-	const int steps = MUESTRAS_SIN - 1;
-	for (int i = 0; i < MUESTRAS_SIN; ++i) {
-		double angle_deg = (90.0 * i) / steps;
-		double rad = angle_deg * M_PI / 180.0;
-		double v = sin(rad) * scale;
-		out[i] = (uint32_t) v;
-	}
-}
-
-void generar_triangulo(uint32_t out[]) {
-	int half = NUM_SAMPLE / 2;
-	for (int i = 0; i < NUM_SAMPLE; i++) {
-		uint32_t v;
-		if (i <= half) {
-			v = (uint32_t) (((uint32_t) i * 1023U) / (uint32_t) half);
-		} else {
-			v = (uint32_t) (((uint32_t) (NUM_SAMPLE - i) * 1023U)
-					/ (uint32_t) half);
-		}
-		if (v > 1023U)
-			v = 1023U;
-		out[i] = (v << 6); // si tu DAC necesita los 10 bits en posiciones altas
-	}
-}
-
-void generar_escalonado(uint32_t out[]) {
-	for (int i = 0; i < NUM_SAMPLE; i++) {
-		uint32_t step = (1023U / ESCALONES);
-		uint32_t bucket = (i / (NUM_SAMPLE / ESCALONES));
-		out[i] = (step * bucket) << 6;
-	}
-}
-
-void generar_escalon(uint32_t out[]) {
-	for (int i = 0; i < NUM_SAMPLE; i++) {
-		uint32_t v = (i <= (NUM_SAMPLE / 2)) ? 1023U : 0U;
-		out[i] = (v << 6);
-	}
-}
-
 /* ------------------ configurar y lanzar el DMA/DAC ------------------ */
-/* generar_Func: configura DAC + DMA para la forma de onda indicada y retorna.
- NO bloquea; buffers y LLI están en variables static fuera de la pila. */
 void generar_Func(int option) {
 	PINSEL_CFG_Type PinCfg;
 	DAC_CONVERTER_CFG_Type DAC_ConverterConfigStruct;
@@ -76,7 +30,13 @@ void generar_Func(int option) {
 	uint32_t tmp;
 	uint32_t sin_0_to_90_16_samples[MAX_MUESTRAS];
 
-	// Init pin DAC P0.26
+	// Si estamos en modo ADC+TIMER, no habilitamos DMA (evitar conflicto)
+	if (adc_timer_mode_enabled) {
+		// Si se pide generar función mientras ADC+TIMER está activo, simplemente salimos.
+		return;
+	}
+
+	// Init pin DAC P0.26 (AOUT)
 	PinCfg.Funcnum = 2;
 	PinCfg.OpenDrain = 0;
 	PinCfg.Pinmode = 0;
@@ -87,6 +47,7 @@ void generar_Func(int option) {
 	// Preparar tabla DAC en buffer estático dac_lut[]
 	generate_sin_0_to_90_16_samples(sin_0_to_90_16_samples);
 
+	// Rellenar la tabla según la opción
 	switch (option) {
 	case DAC_GENERATE_SINE:
 		for (int i = 0; i < NUM_SAMPLE_SINE; i++) {
@@ -103,19 +64,25 @@ void generar_Func(int option) {
 			}
 			dac_lut[i] = (dac_lut[i] << 6);
 		}
+		// asegurar que el resto esté saneado
+		for (int i = NUM_SAMPLE_SINE; i < NUM_SAMPLE; i++)
+			dac_lut[i] = 0;
 		break;
+
 	case DAC_GENERATE_TRIANGLE:
 		generar_triangulo(dac_lut);
 		break;
+
 	case DAC_GENERATE_ESCALATOR:
 		generar_escalonado(dac_lut);
 		break;
+
 	case DAC_GENERATE_ESCALON:
 		generar_escalon(dac_lut);
 		break;
+
 	case DAC_GENERATE_NONE:
 	default:
-		// Si NONE -> deshabilitamos canal DMA y dejamos el DAC quieto
 		GPDMA_ChannelCmd(0, DISABLE);
 		return;
 	}
@@ -125,11 +92,12 @@ void generar_Func(int option) {
 	dma_lli.DstAddr = (uint32_t) &(LPC_DAC->DACR);
 	dma_lli.NextLLI = (uint32_t) &dma_lli; // bucle infinito
 
-	// Control: tamaño dependiendo de la opción
-	dma_lli.Control = ((option == DAC_GENERATE_SINE) ? DMA_SIZE_SINE : DMA_SIZE)
-			| (2 << 18)   // source width 32 bit (según tu driver original)
-			| (2 << 21)   // dest width 32 bit
-			| (1 << 26);  // source increment
+	// Transfer size (coherente con el número de elementos a transferir)
+	uint32_t transSize =
+			(option == DAC_GENERATE_SINE) ? DMA_SIZE_SINE : DMA_SIZE;
+
+	// Control: usa transSize (si tu driver espera transSize-1, ajusta)
+	dma_lli.Control = (transSize) | (2 << 18) | (2 << 21) | (1 << 26);
 
 	// Inicializar GPDMA y configurar canal
 	GPDMA_Init();
@@ -137,16 +105,15 @@ void generar_Func(int option) {
 	GPDMACfg.ChannelNum = 0;
 	GPDMACfg.SrcMemAddr = (uint32_t) dac_lut;
 	GPDMACfg.DstMemAddr = 0;
-	GPDMACfg.TransferSize = (
-			(option == DAC_GENERATE_SINE) ? DMA_SIZE_SINE : DMA_SIZE);
-	GPDMACfg.TransferWidth = 0;
+	GPDMACfg.TransferSize = transSize;
+	GPDMACfg.TransferWidth = 2; // WORD (coincide con (2<<18) en Control)
 	GPDMACfg.TransferType = GPDMA_TRANSFERTYPE_M2P;
 	GPDMACfg.SrcConn = 0;
 	GPDMACfg.DstConn = GPDMA_CONN_DAC;
 	GPDMACfg.DMALLI = (uint32_t) &dma_lli;
 	GPDMA_Setup(&GPDMACfg);
 
-	// Configurar DAC
+	// Configurar DAC sin DMA por defecto
 	DAC_ConverterConfigStruct.CNT_ENA = SET;
 	DAC_ConverterConfigStruct.DMA_ENA = SET;
 	DAC_Init(LPC_DAC);
@@ -210,7 +177,6 @@ void configPIN_INT(void) {
 }
 
 /* ------------------ ADC / TIMER ------------------ */
-
 void configEINT2(void) {
 	EXTI_Init();
 	EXTI_SetMode(EXTI_EINT2, EXTI_MODE_LEVEL_SENSITIVE);
@@ -235,7 +201,6 @@ void config_ADC_TIMER(void) {
 
 	DAC_Init(LPC_DAC);
 	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
-
 
 	// ADC pin P0.24 (AD channel 1)
 	pin.Portnum = 0;
@@ -267,19 +232,6 @@ void config_ADC_TIMER(void) {
 	TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
 }
 
-/* Calcula y actualiza MR1 para la frecuencia solicitada */
-void set_mat_frec(uint32_t frecuencia) {
-	if (frecuencia == 0U)
-		return;
-	uint32_t pres = (uint32_t) PR_TICK_1 + 1;
-	uint32_t denom = (uint32_t) frecuencia * pres;
-	uint32_t match = 0;
-	if (denom != 0) {
-		match = (uint32_t) (((uint32_t) PCLK + (denom / 2)) / denom - 1);
-	}
-	TIM_UpdateMatchValue(LPC_TIM0, 1, match);
-}
-
 /* ------------------ ISRs ------------------ */
 
 void EINT2_IRQHandler(void) {
@@ -292,7 +244,7 @@ void EINT2_IRQHandler(void) {
 	if (estado_actual != estado_anterior) {
 		if (estado_actual) {
 			opc = DAC_GENERATE_NONE; // CAMBIAR OPC A NONE
-			config_adc_timer(); // CONFIGURACION ADC - TIMER
+			config_ADC_TIMER(); // CONFIGURACION ADC - TIMER
 		} else {
 			TIM_DeInit(LPC_TIM0);
 			ADC_ChannelCmd(LPC_ADC, 1, DISABLE); // APAGAR ADC Y TIMER

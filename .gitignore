@@ -6,7 +6,7 @@
 /tpfinal/.mcuxpressoide_packages_support/
 .log
 main.exe
-
+.vscode/
 venv/
 
 # Byte-compiled / optimized / DLL files

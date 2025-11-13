@@ -64,6 +64,3 @@ Este repositorio contiene el trabajo práctico final de la cátedra Electrónica
 Profesor: Ing. Gallardo
 
 Cátedra: Electrónica Digital 3
-
----
-Fin del informe.

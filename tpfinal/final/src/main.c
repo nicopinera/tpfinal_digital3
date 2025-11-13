@@ -6,6 +6,7 @@
 #include "lpc17xx_adc.h"
 #include "lpc17xx_dac.h"
 #include "lpc17xx_timer.h"
+#include "lpc17xx_uart.h"
 #include <math.h>
 #include <stdint.h>
 #include "constantes.h"
@@ -21,6 +22,9 @@ static uint32_t dac_lut[NUM_SAMPLE]; // tabla de salida DAC
 volatile uint32_t systick_ms = 0;
 volatile uint32_t debounce_event_time = 0;
 volatile uint8_t debounce_pending = 0;
+
+/* Flag que indica si estamos en modo ADC+TIMER (leer ADC y pasar al DAC) */
+volatile uint8_t adc_timer_mode_enabled = 0;
 
 /* ------------------ configurar y lanzar el DMA/DAC ------------------ */
 void generar_Func(int option) {
@@ -176,18 +180,52 @@ void configPIN_INT(void) {
 	NVIC_EnableIRQ(EINT3_IRQn);
 }
 
-/* ------------------ ADC / TIMER ------------------ */
+/* ------------------ ADC + TIMER (habilitación por EINT2) ------------------ */
 void configEINT2(void) {
+	PINSEL_CFG_Type p;
+	p.Portnum = 2;
+	p.Pinnum = 12;
+	p.Funcnum = 1;
+	p.OpenDrain = 0;
+	p.Pinmode = PINSEL_PINMODE_PULLUP; // pull-up para detectar nivel
+	PINSEL_ConfigPin(&p);
+
+	/* Inicializar EXTI EINT2 por nivel */
 	EXTI_Init();
 	EXTI_SetMode(EXTI_EINT2, EXTI_MODE_LEVEL_SENSITIVE);
 	NVIC_EnableIRQ(EINT2_IRQn);
-
 }
 
+/* Configura ADC + Timer + UART para enviar en el Handler del timer */
 void config_ADC_TIMER(void) {
+
+	PINSEL_CFG_Type pinCfg;
+
+	// TXD2 (P0.10) y RXD2 (P0.11)
+	pinCfg.Portnum = 0;
+	pinCfg.Pinnum = 10;
+	pinCfg.Funcnum = 1;
+	pinCfg.Pinmode = PINSEL_PINMODE_PULLUP;
+	pinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+	PINSEL_ConfigPin(&pinCfg);
+
+	pinCfg.Pinnum = 11;
+	PINSEL_ConfigPin(&pinCfg);
+
+	UART_CFG_Type uart_cfg;
+	UART_ConfigStructInit(&uart_cfg);
+	uart_cfg.Baud_rate = 9600; // 115000
+	UART_Init(LPC_UART2, &uart_cfg);
+
+	UART_FIFO_CFG_Type uart_fifo;
+	UART_FIFOConfigStructInit(&uart_fifo);
+	UART_FIFOConfig(LPC_UART2, &uart_fifo);
+	UART_TxCmd(LPC_UART2, ENABLE);
+	NVIC_DisableIRQ(UART2_IRQn);
+
 	PINSEL_CFG_Type pin;
 
-	// Init pin DAC P0.26
+	// Asegurar DAC pin P0.26 configurado como AOUT
 	pin.Funcnum = 2;
 	pin.OpenDrain = 0;
 	pin.Pinmode = 0;
@@ -195,25 +233,27 @@ void config_ADC_TIMER(void) {
 	pin.Portnum = 0;
 	PINSEL_ConfigPin(&pin);
 
-	DAC_CONVERTER_CFG_Type DAC_ConverterConfigStruct;
-	DAC_ConverterConfigStruct.CNT_ENA = 0;
-	DAC_ConverterConfigStruct.DMA_ENA = 0;
-
+	// Inicializar DAC (modo no DMA, update por software)
+	DAC_CONVERTER_CFG_Type DAC_Config;
+	DAC_Config.CNT_ENA = SET;    // Enable counter (not strictly needed)
+	DAC_Config.DMA_ENA = RESET;  // NO DMA: we'll update from timer ISR
 	DAC_Init(LPC_DAC);
-	DAC_ConfigDAConverterControl(LPC_DAC, &DAC_ConverterConfigStruct);
+	DAC_ConfigDAConverterControl(LPC_DAC,
+			(DAC_CONVERTER_CFG_Type*) &DAC_Config);
 
-	// ADC pin P0.24 (AD channel 1)
+	// ADC: P0.24 -> AD1.1
 	pin.Portnum = 0;
 	pin.Pinnum = 24;
-	pin.Funcnum = 1;
+	pin.Funcnum = 1; // AD1.1 typical
 	pin.OpenDrain = 0;
 	pin.Pinmode = PINSEL_PINMODE_TRISTATE;
 	PINSEL_ConfigPin(&pin);
 
-	ADC_Init(LPC_ADC, 200000); // 200 kHz ADC clock
+	ADC_Init(LPC_ADC, 200000);
 	ADC_BurstCmd(LPC_ADC, DISABLE);
-	ADC_ChannelCmd(LPC_ADC, 1, ENABLE);
+	ADC_ChannelCmd(LPC_ADC, 1, ENABLE); // canal AD1
 
+	// Timer0: configura con prescaler en ticks
 	TIM_TIMERCFG_Type config_pre;
 	config_pre.PrescaleOption = TIM_PRESCALE_TICKVAL;
 	config_pre.PrescaleValue = PR_TICK_1;
@@ -225,34 +265,47 @@ void config_ADC_TIMER(void) {
 	config_timer.ResetOnMatch = ENABLE;
 	config_timer.StopOnMatch = DISABLE;
 	config_timer.ExtMatchOutputType = TIM_EXTMATCH_TOGGLE;
-	config_timer.MatchValue = 49999;
+	uint32_t match = set_mat_frec(frec);
+	config_timer.MatchValue = match; // valor inicial (ajustable)
 	TIM_ConfigMatch(LPC_TIM0, &config_timer);
+
 	TIM_Cmd(LPC_TIM0, ENABLE);
 	NVIC_EnableIRQ(TIMER0_IRQn);
 	TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
 }
 
+/* Detener ADC+TIMER de forma segura */
+void stop_ADC_TIMER(void) {
+	// Deshabilitar timer y ADC
+	TIM_Cmd(LPC_TIM0, DISABLE);
+	TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
+	ADC_ChannelCmd(LPC_ADC, 1, DISABLE);
+	GPDMA_ChannelCmd(0, DISABLE); // Asegurarse de que DMA esté deshabilitado
+}
+
 /* ------------------ ISRs ------------------ */
 
 void EINT2_IRQHandler(void) {
-	static uint32_t estado_anterior = 1; // suponemos pull-up → comienza en alto (1)
+	static uint32_t estado_anterior = 1; // suponemos pull-up -> comienza en alto (1)
 	uint32_t estado_actual;
 
-	// Leer el pin asociado al EINT2, por ejemplo P2.12
+	// Leer el pin P2.12 (bit 12)
 	estado_actual = (GPIO_ReadValue(2) >> 12) & 0x1;
 
 	if (estado_actual != estado_anterior) {
-		if (estado_actual) {
-			opc = DAC_GENERATE_NONE; // CAMBIAR OPC A NONE
-			config_ADC_TIMER(); // CONFIGURACION ADC - TIMER
+		if (estado_actual == 0) {
+			// switch cerrado (activo) -> habilitar ADC+TIMER
+			adc_timer_mode_enabled = 1;
+			GPDMA_ChannelCmd(0, DISABLE);
+			config_ADC_TIMER();
 		} else {
-			TIM_DeInit(LPC_TIM0);
-			ADC_ChannelCmd(LPC_ADC, 1, DISABLE); // APAGAR ADC Y TIMER
+			// switch abierto -> deshabilitar ADC+TIMER y volver a modo DMA si opc lo pide
+			stop_ADC_TIMER();
 		}
 		estado_anterior = estado_actual;
 	}
 
-	// Limpiar bandera de interrupción externa
+	// Limpiar bandera de interrupción externa EINT2
 	LPC_SC->EXTINT = (1 << 2);
 }
 
@@ -261,22 +314,32 @@ void SysTick_Handler(void) {
 	systick_ms++;
 }
 
-/* Timer0 IRQ: solo si usa ADC+TIMER sampling mode.
- Nota: si usas DMA para DAC, NO habilites configADC/configTIMER simultáneamente. */
+/* Timer0 IRQ: usado para disparar conversiones ADC y pasar el valor al DAC (modo ADC+TIMER) */
 void TIMER0_IRQHandler(void) {
 	if (TIM_GetIntStatus(LPC_TIM0, TIM_MR1_INT) == SET) {
-		ADC_StartCmd(LPC_ADC, ADC_START_NOW);
-		while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
-			;
-		uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1);
-		uint32_t dac_val = (uint32_t) (raw >> 2) & 0x3FFU;
-		DAC_UpdateValue(LPC_DAC, dac_val);
-		// Limpiar la bandera correcta MR1 (antes estaba MR0 en tu código)
-		TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
+		if (adc_timer_mode_enabled) {
+			/* Inicio de conversión */
+			ADC_StartCmd(LPC_ADC, ADC_START_NOW);
+
+			while (!(ADC_ChannelGetStatus(LPC_ADC, ADC_CHANNEL_1, ADC_DATA_DONE)))
+				; // esperar fin de conversión
+
+			uint16_t raw = ADC_ChannelGetData(LPC_ADC, ADC_CHANNEL_1); // 12 bits (0..4095)
+			uint8_t valor = (uint16_t) (raw >> 4) & 0xFFU;
+
+			/* Enviar primer byte */
+			UART_SendByte(LPC_UART2, valor);
+			/* Esperar que THR esté vacío antes de enviar el siguiente byte (asegura orden y evita sobreescritura) */
+			while (!(LPC_UART2->LSR & 0x20)) { /* 0x20 = UART_LSR_THRE */
+			}
+		}
 	}
+
+	/* Limpiar la bandera MR1 */
+	TIM_ClearIntPending(LPC_TIM0, TIM_MR1_INT);
 }
 
-/* EINT3 IRQ: puerto 2 IRQ. Hacemos debounce diferido: registramos el evento y limpiamos la fuente. */
+/* EINT3 IRQ: puerto 2 IRQ. Debounce diferido para dip switches */
 void EINT3_IRQHandler(void) {
 	const uint32_t mask = (1u << 0) | (1u << 1) | (1u << 2);
 
@@ -286,8 +349,8 @@ void EINT3_IRQHandler(void) {
 	// Limpiar la fuente de interrupción del puerto 2
 	LPC_GPIOINT->IO2IntClr = mask;
 }
+/* ------------------ resto del sistema (set_mat_frec, main) ------------------ */
 
-/* ------------------ main ------------------ */
 int main(void) {
 	SystemInit();
 
@@ -295,7 +358,7 @@ int main(void) {
 	configPIN();
 	configPIN_INT();
 
-	// COnfiguracion EINT2
+	// Configurar EINT2 pin + EXTI
 	configEINT2();
 
 	// SysTick 1 ms (necesario para debounce diferido)
@@ -308,7 +371,8 @@ int main(void) {
 		if (debounce_pending) {
 			if ((systick_ms - debounce_event_time) >= DEBOUNCE_MS) {
 				uint32_t mask = 0x7u;
-				uint32_t valor_p = (~GPIO_ReadValue(2)) & mask;	// Interpretar valor_p como código 0..7
+				uint32_t valor_p = (~GPIO_ReadValue(2)) & mask; // leer P2.0..P2.2, invertir si usas pull-up
+				// Mapea (puedes ajustar la lógica de mapeo a tu necesidad)
 				switch (valor_p) {
 				case 0:
 					opc = DAC_GENERATE_NONE;
@@ -333,15 +397,15 @@ int main(void) {
 			}
 		}
 
-		// Si cambió la opción, reconfiguramos (genera la forma de onda con DMA)
-		if (opc != last_opc) {
+		// Si cambió la opción y no estamos en modo ADC+TIMER, reconfiguramos (DMA)
+		if (!adc_timer_mode_enabled && (opc != last_opc)) {
 			last_opc = opc;
 			if (opc == DAC_GENERATE_NONE) {
-				GPDMA_ChannelCmd(0, DISABLE); // Deshabilitar DMA
+				GPDMA_ChannelCmd(0, DISABLE);
 			} else {
 				generar_Func(opc);
 			}
-		}
+		}// Cuando esté activo adc_timer_mode_enabled, el TIMER0_IRQHandler hace ADC->DAC.
 	}
 
 	return 0;
